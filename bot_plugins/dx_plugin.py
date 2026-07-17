@@ -144,6 +144,8 @@ class DXPlugin(Plugin):
     def _read_env(self) -> dict:
         env = {}
         p = self._get_env_path()
+        if not os.path.exists(p):
+            self._init_env(p)
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as f:
                 for line in f:
@@ -152,6 +154,17 @@ class DXPlugin(Plugin):
                         k, _, v = line.partition("=")
                         env[k.strip()] = v.strip().strip("\"'")
         return env
+
+    def _init_env(self, path: str):
+        """首次使用：从 .env.example 复制默认配置"""
+        example_path = os.path.join(os.path.dirname(path), ".env.example")
+        if os.path.exists(example_path):
+            import shutil
+            shutil.copy(example_path, path)
+            Log.ok(f"已从 .env.example 初始化配置文件: {path}")
+        else:
+            self._write_env({})
+            Log.ok(f"已创建默认配置文件: {path}")
 
     def _write_env(self, env: dict):
         p = self._get_env_path()

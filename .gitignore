@@ -1,0 +1,15 @@
+# 环境变量（含账号密码，不提交）
+.env
+
+# Cookie 缓存
+cookies.json
+
+# 截图
+screenshots/
+
+# 日志
+*.log
+
+# Python
+__pycache__/
+*.pyc
