@@ -5,19 +5,18 @@
 QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
 支持多轮会话引导配置、一键提交青龙面板、手动触发任务。
 
-命令列表（全部中文）:
-  电信 / 电信帮助          - 帮助菜单
-  电信登录                 - 设置账号密码（多轮引导）
-  电信状态                 - 查看配置状态
-  电信提交                 - 提交环境变量到青龙面板
-  电信签到                 - 手动触发签到
-  电信兑换                 - 手动触发金豆兑换
-  电信执行                 - 执行全部任务
-  电信配置                 - 查看当前所有配置
-  电信设置 KEY VAL         - 设置单个配置项
+命令列表:
+  电信菜单                    - 帮助菜单（含活动产物+命令功能）
+  电信登录                    - 多轮引导设置账号密码
+  电信状态                    - 查看配置状态
+  电信提交                    - 提交环境变量到青龙面板
+  电信签到                    - 手动触发签到
+  电信兑换                    - 手动触发金豆兑换
+  电信执行                    - 执行全部任务
+  电信配置                    - 查看当前所有配置
   电信开启 签到/兑换/活动/秒杀  - 开启功能
   电信关闭 签到/兑换/活动/秒杀  - 关闭功能
-  签到 / 话费 / 金豆       - 快捷命令
+  签到 / 话费 / 金豆          - 快捷命令
 """
 
 import os
@@ -46,26 +45,36 @@ DX_ENV_VARS = [
     ("DX_TIMEOUT",                 "超时秒数"),
 ]
 
-# ==================== 帮助文本 ====================
-HELP_TEXT = """📱 中国电信话费自动化
+# ==================== 菜单文本 ====================
+MENU_TEXT = """📱 中国电信话费自动化
 
-可用命令:
 ━━━━━━━━━━━━━━━━━━━━
-🔑 电信登录       - 设置账号密码
-📊 电信状态       - 查看运行状态
-⚙️  电信提交       - 提交配置到青龙面板
-🎯 电信签到       - 手动触发签到
-💎 电信兑换       - 手动触发兑换
-🚀 电信执行       - 执行全部任务
-🔧 电信配置       - 查看当前所有配置
-📝 电信设置 K V   - 设置单个配置项
-✅ 电信开启 XX    - 开启功能
-❌ 电信关闭 XX    - 关闭功能
+📋 活动清单（产物）
 ━━━━━━━━━━━━━━━━━━━━
-可开关功能: 签到 | 兑换 | 活动 | 秒杀
-快捷命令: 签到 / 话费 / 金豆
+① 签到翻牌 → 话费(0.1~100元)、金豆(20~1500)、流量包
+② 金豆抽奖 → 话费、金豆、优惠券
+③ 见面礼   → 200金豆、翼回收20元券
+④ 积分商城 → 话费、流量包、实物礼品
+⑤ 口令兑换 → 话费(0.66~100元)
+⑥ APP签到  → 金豆(20~35个/天)
+⑦ 金豆秒杀 → 0.5元(10点)/1元(14点)话费
+━━━━━━━━━━━━━━━━━━━━
+🔧 命令功能
+━━━━━━━━━━━━━━━━━━━━
+🔑 电信登录    - 多轮引导设置账号密码
+📊 电信状态    - 查看当前配置和开关状态
+⚙️  电信提交    - 将.env配置一键提交到青龙面板
+🎯 电信签到    - 手动触发签到翻牌任务
+💎 电信兑换    - 手动触发金豆兑换话费
+🚀 电信执行    - 执行全部自动化任务
+🔧 电信配置    - 查看所有环境变量详情
+✅ 电信开启 XX - 开启指定功能
+❌ 电信关闭 XX - 关闭指定功能
+━━━━━━━━━━━━━━━━━━━━
+可开关: 签到 | 兑换 | 活动 | 秒杀
+快捷: 签到 / 话费 / 金豆
 
-项目地址: github.com/Hayfan-wu/QL-DX"""
+项目: github.com/Hayfan-wu/QL-DX"""
 
 
 # ==================== 插件类 ====================
@@ -106,22 +115,20 @@ class DXPlugin(Plugin):
             return self._cmd_status(sender_id, group_id)
 
         # 解析"电信"子命令
-        # 格式: 电信 [子命令] [参数]
         if not text.startswith("电信"):
-            return HELP_TEXT
+            return MENU_TEXT
 
-        # 去掉"电信"前缀
         rest = text[2:].strip()
         if not rest:
-            return HELP_TEXT
+            return MENU_TEXT
 
         parts = rest.split(maxsplit=1)
         sub_cmd = parts[0] if parts else ""
         arg = parts[1] if len(parts) > 1 else ""
 
-        # 子命令路由表（全部中文）
-        if sub_cmd in ("帮助", "help"):
-            return HELP_TEXT
+        # 子命令路由表
+        if sub_cmd in ("菜单", "帮助", "help"):
+            return MENU_TEXT
 
         if sub_cmd == "登录":
             return self._cmd_login(sender_id, group_id)
@@ -144,16 +151,13 @@ class DXPlugin(Plugin):
         if sub_cmd == "配置":
             return self._cmd_config(sender_id, group_id)
 
-        if sub_cmd == "设置":
-            return self._cmd_set(arg, sender_id, group_id)
-
         if sub_cmd == "开启":
             return self._cmd_toggle(arg, True, sender_id, group_id)
 
         if sub_cmd == "关闭":
             return self._cmd_toggle(arg, False, sender_id, group_id)
 
-        return HELP_TEXT
+        return MENU_TEXT
 
     # ---------- 环境文件路径 ----------
     def _get_env_path(self):
@@ -204,12 +208,10 @@ class DXPlugin(Plugin):
         """登录会话处理"""
         text = text.strip()
 
-        # 第1步：输入手机号
         if re.match(r"^1[3-9]\d{9}$", text):
             SessionManager.set_data(sender_id, "dx_phone", text)
             return "📱 手机号已记录，请输入登录密码："
 
-        # 第2步：输入密码
         if SessionManager.get_data(sender_id, "dx_phone"):
             phone = SessionManager.get_data(sender_id, "dx_phone")
             pwd = text
@@ -271,11 +273,10 @@ class DXPlugin(Plugin):
 
         if not ql_url or not ql_cid or not ql_cs:
             return (
-                "⚠️ 青龙面板未配置，请先设置:\n"
+                "⚠️ 青龙面板未配置，请先在青龙面板中设置以下环境变量:\n"
                 "QL_URL=http://你的青龙IP:5700\n"
                 "QL_CLIENT_ID=你的ClientID\n"
-                "QL_CLIENT_SECRET=你的ClientSecret\n\n"
-                "可使用 电信设置 QL_URL http://xxx:5700 设置"
+                "QL_CLIENT_SECRET=你的ClientSecret"
             )
 
         try:
@@ -345,32 +346,6 @@ class DXPlugin(Plugin):
                 val = "(未设置)"
             lines.append(f"{key} = {val}")
         return "\n".join(lines)
-
-    def _cmd_set(self, arg, sender_id, group_id=None):
-        parts = arg.split(maxsplit=1)
-        if len(parts) < 2:
-            return (
-                "用法: 电信设置 KEY VALUE\n"
-                "例如: 电信设置 DX_FLASH_SALE_TIME 14:00:00\n"
-                "可用 KEY: DX_PHONE, DX_PASSWORD, DX_ENABLE_SIGNIN, "
-                "DX_ENABLE_EXCHANGE, DX_ENABLE_ACTIVITY, DX_ENABLE_FLASH_SALE, "
-                "DX_MIN_BEANS_TO_EXCHANGE, DX_FLASH_SALE_TIME, "
-                "DX_HEADLESS, DX_TIMEOUT, QL_URL, QL_CLIENT_ID, QL_CLIENT_SECRET"
-            )
-
-        key, val = parts[0].strip().upper(), parts[1].strip()
-
-        valid_keys = {k for k, _ in DX_ENV_VARS}
-        valid_keys.update({"QL_URL", "QL_CLIENT_ID", "QL_CLIENT_SECRET"})
-        if key not in valid_keys:
-            return f"❌ 未知配置项: {key}\n可用: {', '.join(sorted(valid_keys))}"
-
-        env = self._read_env()
-        env[key] = val
-        self._write_env(env)
-
-        display_val = "***" if "PASSWORD" in key else val
-        return f"✅ {key} = {display_val}"
 
     def _cmd_toggle(self, arg, enable: bool, sender_id, group_id=None):
         """开关功能（中文参数）"""
