@@ -35,17 +35,35 @@
 
 ## 快速开始
 
-### 1. 部署到青龙面板
+### 首次部署
 
 ```bash
-cd /ql/data/scripts   # 或 /ql/scripts
-git clone https://github.com/Hayfan-wu/QL-DX.git
+cd /opt && git clone https://github.com/Hayfan-wu/QL-DX.git
 cd QL-DX
 pip install -r requirements.txt --break-system-packages
 playwright install chromium
 ```
 
-### 2. 配置环境变量
+### 更新
+
+```bash
+cd /opt/QL-DX && git pull
+```
+
+### 青龙面板端
+
+```bash
+# 首次
+cd /ql/data/scripts && git clone https://github.com/Hayfan-wu/QL-DX.git
+cd QL-DX
+pip install -r requirements.txt --break-system-packages
+playwright install chromium
+
+# 更新
+cd /ql/data/scripts/QL-DX && git pull
+```
+
+### 配置环境变量
 
 在青龙面板中创建以下环境变量，或通过 QQ 机器人 `电信登录` 设置（登录完成后自动提交青龙）：
 
@@ -58,7 +76,7 @@ playwright install chromium
 | `DX_FLASH_SALE_TIME` | 秒杀时间 HH:MM:SS | 否 |
 | `DX_HEADLESS` | 无头模式 true/false | 否 |
 
-### 3. 创建定时任务
+### 创建定时任务
 
 ```
 任务名称: DX-Telecom
@@ -75,8 +93,11 @@ playwright install chromium
 ### 部署方式
 
 ```bash
-cd /opt
-git clone https://github.com/Hayfan-wu/QL-DX.git
+# 首次
+cd /opt && git clone https://github.com/Hayfan-wu/QL-DX.git
+
+# 更新
+cd /opt/QL-DX && git pull
 ```
 
 QL-Bot 启动时自动扫描 `/opt/QL-DX/bot_plugins/` 并加载插件。
