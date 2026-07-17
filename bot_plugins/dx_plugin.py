@@ -3,11 +3,11 @@
 中国电信话费自动化 - QQ机器人插件
 ==================================
 QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
-支持多轮会话引导配置、登录后自动提交青龙面板、手动触发任务。
+纯宿主机部署，配置保存在项目 .env 文件中，无需青龙面板。
 
 命令列表:
   电信菜单                    - 帮助菜单（含活动产物+命令功能）
-  电信登录                    - 多轮引导设置账号密码，完成后自动提交青龙
+  电信登录                    - 多轮引导设置账号密码，保存到本地配置
   电信状态                    - 查看配置状态
   电信签到                    - 手动触发签到
   电信执行                    - 执行全部任务
@@ -19,26 +19,12 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
 
 import os
 import re
-import json
 import subprocess
 import sys
-from pathlib import Path
 
 from bot.plugins.base import Plugin
-from bot.utils import send_qq_message, Log, normalize_text
-from bot.ql_api import ql
+from bot.utils import Log
 from bot.session import SessionManager
-
-# ==================== 环境变量定义 ====================
-DX_ENV_VARS = [
-    ("DX_ACCOUNT",                 "电信账号（格式: 手机号#密码）"),
-    ("DX_ENABLE_SIGNIN",           "启用签到 (true/false)"),
-    ("DX_ENABLE_ACTIVITY",         "启用活动扫描 (true/false)"),
-    ("DX_ENABLE_FLASH_SALE",       "启用秒杀 (true/false)"),
-    ("DX_FLASH_SALE_TIME",         "秒杀时间 (HH:MM:SS)"),
-    ("DX_HEADLESS",                "无头模式 (true/false)"),
-    ("DX_TIMEOUT",                 "超时秒数"),
-]
 
 # ==================== 菜单文本 ====================
 MENU_TEXT = """📱 中国电信话费自动化
@@ -53,7 +39,7 @@ MENU_TEXT = """📱 中国电信话费自动化
 ━━━━━━━━━━━━━━━━━━━━
 🔧 命令功能
 ━━━━━━━━━━━━━━━━━━━━
-🔑 电信登录    - 多轮引导设置账号密码，完成后自动提交青龙
+🔑 电信登录    - 多轮引导设置账号密码，保存到本地配置
 📊 电信状态    - 查看当前配置和开关状态
 🎯 电信签到    - 手动触发签到翻牌任务
 🚀 电信执行    - 执行全部自动化任务
@@ -140,7 +126,7 @@ class DXPlugin(Plugin):
 
         return MENU_TEXT
 
-    # ---------- 环境文件路径 ----------
+    # ---------- 配置文件读写 ----------
     def _get_env_path(self):
         if self._env_path:
             return self._env_path
@@ -164,12 +150,21 @@ class DXPlugin(Plugin):
 
     def _write_env(self, env: dict):
         p = self._get_env_path()
+        keys = [
+            ("DX_ACCOUNT",              "电信账号（格式: 手机号#密码）"),
+            ("DX_ENABLE_SIGNIN",        "启用签到 (true/false)"),
+            ("DX_ENABLE_ACTIVITY",      "启用活动扫描 (true/false)"),
+            ("DX_ENABLE_FLASH_SALE",    "启用秒杀 (true/false)"),
+            ("DX_FLASH_SALE_TIME",      "秒杀时间 (HH:MM:SS)"),
+            ("DX_HEADLESS",             "无头模式 (true/false)"),
+            ("DX_TIMEOUT",              "超时秒数"),
+        ]
         lines = [
             "# 中国电信话费自动化 - 环境变量",
             "# 由 QQ 机器人自动生成",
             "",
         ]
-        for key, desc in DX_ENV_VARS:
+        for key, desc in keys:
             val = env.get(key, "")
             lines.append(f"# {desc}")
             lines.append(f"{key}={val}")
@@ -179,7 +174,6 @@ class DXPlugin(Plugin):
         Log.ok(f".env 已更新: {p}")
 
     def _parse_account(self, env: dict):
-        """解析 DX_ACCOUNT 为 (phone, password)"""
         raw = env.get("DX_ACCOUNT", "")
         if raw and "#" in raw:
             return raw.split("#", 1)
@@ -193,7 +187,7 @@ class DXPlugin(Plugin):
         return "🔑 请输入你的中国电信手机号（11位数字）："
 
     def _login_session(self, sender_id, group_id, text):
-        """登录会话处理 - 完成后自动提交青龙"""
+        """登录会话处理 - 保存到本地配置"""
         text = text.strip()
 
         # 第1步：输入手机号
@@ -201,7 +195,7 @@ class DXPlugin(Plugin):
             SessionManager.set_data(sender_id, "dx_phone", text)
             return "📱 手机号已记录，请输入登录密码："
 
-        # 第2步：输入密码 → 保存并自动提交青龙
+        # 第2步：输入密码 → 保存到 .env
         if SessionManager.get_data(sender_id, "dx_phone"):
             phone = SessionManager.get_data(sender_id, "dx_phone")
             pwd = text
@@ -213,73 +207,15 @@ class DXPlugin(Plugin):
 
             SessionManager.clear(sender_id)
 
-            # 自动提交到青龙面板
-            submit_result = self._auto_submit(env)
-
             return (
-                f"✅ 账号密码已保存！\n"
+                f"✅ 账号密码已保存到本地配置！\n"
                 f"📱 手机号: {phone[:3]}****{phone[-4:]}\n"
                 f"🔐 密码: {'*' * len(pwd)}\n\n"
-                f"{submit_result}"
+                f"配置已生效，可发送 电信执行 开始任务\n"
+                f"或发送 电信状态 查看配置状态"
             )
 
         return "⚠️ 请先输入正确的手机号（11位数字）"
-
-    def _auto_submit(self, env: dict) -> str:
-        """登录完成后自动提交环境变量到青龙面板"""
-        ql_url = env.get("QL_URL", "")
-        ql_cid = env.get("QL_CLIENT_ID", "")
-        ql_cs = env.get("QL_CLIENT_SECRET", "")
-
-        if not ql_url or not ql_cid or not ql_cs:
-            return "⚠️ 青龙面板未配置，请在青龙面板中手动设置 QL_URL / QL_CLIENT_ID / QL_CLIENT_SECRET"
-
-        try:
-            ql.base_url = ql_url.rstrip("/")
-            ql.client_id = ql_cid
-            ql.client_secret = ql_cs
-            ql.token = None
-
-            success = 0
-            fail = 0
-            msgs = []
-
-            for key, desc in DX_ENV_VARS:
-                val = env.get(key, "")
-                if not val:
-                    continue
-                try:
-                    existing = ql.list_envs(search_value=key)
-                    found = [e for e in existing if e.get("name") == key]
-                    if found:
-                        eid = found[0].get("id") or found[0].get("_id")
-                        ql.update_env(eid, key, val, f"DX-Telecom: {desc}")
-                    else:
-                        ql.create_env(key, val, f"DX-Telecom: {desc}")
-                    success += 1
-                except Exception as e:
-                    fail += 1
-                    msgs.append(f"  ❌ {key}: {e}")
-
-            result = (
-                f"📤 已自动提交到青龙面板\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ 成功: {success} 个\n"
-            )
-            if fail:
-                result += f"❌ 失败: {fail} 个\n"
-                result += "\n".join(msgs)
-            result += (
-                "\n━━━━━━━━━━━━━━━━━━━━\n"
-                "请在青龙面板中创建定时任务:\n"
-                "任务名: DX-Telecom\n"
-                "命令: task QL-DX/main.py\n"
-                "定时: 0 8,12,18 * * *"
-            )
-            return result
-
-        except Exception as e:
-            return f"⚠️ 自动提交青龙失败: {e}\n请稍后手动在青龙面板中配置环境变量"
 
     def _cmd_status(self, sender_id, group_id=None):
         """查看运行状态"""
@@ -319,18 +255,30 @@ class DXPlugin(Plugin):
 
     def _cmd_config(self, sender_id, group_id=None):
         env = self._read_env()
+        keys = [
+            ("DX_ACCOUNT",              "电信账号"),
+            ("DX_ENABLE_SIGNIN",        "启用签到"),
+            ("DX_ENABLE_ACTIVITY",      "启用活动扫描"),
+            ("DX_ENABLE_FLASH_SALE",    "启用秒杀"),
+            ("DX_FLASH_SALE_TIME",      "秒杀时间"),
+            ("DX_HEADLESS",             "无头模式"),
+            ("DX_TIMEOUT",              "超时秒数"),
+        ]
         lines = ["📋 当前完整配置", "━━━━━━━━━━━━━━━━━━━━"]
-        for key, desc in DX_ENV_VARS:
+        for key, desc in keys:
             val = env.get(key, "")
             if key == "DX_ACCOUNT":
-                val = "***" if val else "未设置"
+                if val and "#" in val:
+                    phone, _ = val.split("#", 1)
+                    val = f"{phone[:3]}****{phone[-4:]}#***"
+                else:
+                    val = "未设置" if not val else "***"
             elif not val:
                 val = "(未设置)"
-            lines.append(f"{key} = {val}")
+            lines.append(f"{desc}: {val}")
         return "\n".join(lines)
 
     def _cmd_toggle(self, arg, enable: bool, sender_id, group_id=None):
-        """开关功能（中文参数）"""
         toggle_map = {
             "签到": "DX_ENABLE_SIGNIN",
             "活动": "DX_ENABLE_ACTIVITY",
@@ -381,7 +329,8 @@ class DXPlugin(Plugin):
                 f"🚀 {task_name}任务已提交执行\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"进程 PID: {proc.pid}\n"
-                f"请稍后查看青龙面板日志获取结果\n"
+                f"请稍后查看脚本日志获取结果\n"
+                f"日志文件: {script_dir}/dx_telecom.log\n"
                 f"或发送 电信状态 查看配置"
             )
 
