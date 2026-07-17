@@ -1,7 +1,8 @@
 """
 中国电信话费自动化 - 配置管理
 =============================
-纯宿主机部署，从 .env 文件和环境变量读取配置。
+从 .env 文件和环境变量读取配置，
+支持青龙面板环境变量注入。
 
 活动入口共 5 个（2个网页可自动化 + 3个APP专属仅供参考）
 """
@@ -35,6 +36,11 @@ if _ACCOUNT_RAW and "#" in _ACCOUNT_RAW:
 else:
     PHONE = ""
     PASSWORD = ""
+
+# ==================== 青龙面板 ====================
+QL_URL: str = _env("QL_URL", "http://127.0.0.1:5700")
+QL_CLIENT_ID: str = _env("QL_CLIENT_ID")
+QL_CLIENT_SECRET: str = _env("QL_CLIENT_SECRET")
 
 # ==================== 功能开关 ====================
 ENABLE_SIGNIN: bool = _env_bool("DX_ENABLE_SIGNIN", True)
