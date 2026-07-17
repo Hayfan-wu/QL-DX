@@ -18,15 +18,18 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
   签到 / 话费 / 金豆          - 快捷命令
 """
 
+import asyncio
+import importlib
 import os
 import re
-import subprocess
-import sys
 
 from bot.plugins.base import Plugin
 from bot.utils import Log
 from bot.ql_api import ql
 from bot.session import sessions
+# 延迟导入，在 _run_script 中注入环境变量后通过 importlib.reload 重新加载
+import config
+import telecom_api
 from telecom_api import query_results
 
 # ==================== 环境变量定义 ====================
@@ -326,10 +329,10 @@ class DXPlugin(Plugin):
         return query_results()
 
     def _cmd_signin(self, sender_id, group_id=None):
-        return self._run_script("签到", ["--signin-only"])
+        return self._run_script("签到", signin_only=True)
 
     def _cmd_run(self, sender_id, group_id=None):
-        return self._run_script("全部任务", [])
+        return self._run_script("全部任务", signin_only=False)
 
     def _cmd_config(self, sender_id, group_id=None):
         env = self._read_env()
@@ -365,42 +368,44 @@ class DXPlugin(Plugin):
         return f"{status} {arg}"
 
     # ---------- 脚本执行 ----------
-    def _run_script(self, task_name: str, extra_args: list) -> str:
+    def _run_script(self, task_name: str, signin_only: bool = False) -> str:
+        """直接在 bot 进程内异步执行任务，确保产物记录写入 result.json"""
         env = self._read_env()
         phone, pwd = self._parse_account(env)
         if not phone or not pwd:
             return "⚠️ 请先执行 电信登录 设置账号密码"
 
-        script_dir = self.project_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        script_path = os.path.join(script_dir, "main.py")
+        # 将 .env 配置注入到当前进程环境变量
+        for k, v in env.items():
+            if v:
+                os.environ[k] = v
 
-        if not os.path.exists(script_path):
-            return f"❌ 脚本未找到: {script_path}"
+        # 重新加载模块，确保 config.PHONE/PASSWORD 等读取到最新环境变量
+        importlib.reload(config)
+        importlib.reload(telecom_api)
+        from telecom_api import run_all as _run_all
 
         try:
-            env_copy = os.environ.copy()
-            env_copy.update(env)
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-            cmd = [sys.executable, script_path] + extra_args
-            proc = subprocess.Popen(
-                cmd,
-                cwd=script_dir,
-                env=env_copy,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+        async def _bg_task():
+            try:
+                result = await _run_all(signin_only=signin_only)
+                Log.ok(f"DX 任务完成: {task_name}, items={len(result.get('items', []))}")
+            except Exception as e:
+                Log.error(f"DX 任务异常: {task_name}, {e}")
 
-            return (
-                f"🚀 {task_name}任务已提交执行\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"进程 PID: {proc.pid}\n"
-                f"请稍后查看青龙面板日志获取结果\n"
-                f"或发送 电信状态 查看配置"
-            )
+        asyncio.ensure_future(_bg_task(), loop=loop)
 
-        except Exception as e:
-            return f"❌ 执行失败: {e}"
+        return (
+            f"🚀 {task_name}任务已提交执行\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"任务将在后台运行，完成后自动记录产物\n"
+            f"执行完毕后发送 电信查询 查看结果"
+        )
 
 
 # ==================== 会话处理器注册 ====================

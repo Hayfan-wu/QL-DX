@@ -463,8 +463,12 @@ async def flash_sale(page: Page) -> dict:
 
 
 # ==================== 主流程 ====================
-async def run_all() -> dict:
-    """执行全部自动化任务，返回结果汇总"""
+async def run_all(signin_only: bool = False) -> dict:
+    """执行全部自动化任务，返回结果汇总
+
+    Args:
+        signin_only: 仅执行签到翻牌，跳过活动和秒杀
+    """
     result = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "phone": PHONE[:3] + "****" + PHONE[-4:] if PHONE else "未设置",
@@ -530,24 +534,26 @@ async def run_all() -> dict:
                 result["items"].append({"type": "签到", "value": signin_result.get("msg", "完成")})
 
             # 3. 活动扫描（签到 + 口令兑换）
-            act_results = await scan_activities(page)
-            result["activities"] = act_results
-            if act_results and not (len(act_results) == 1 and act_results[0].get("skipped")):
-                result["items"].append({"type": "活动", "value": f"参与 {len(act_results)} 个"})
+            if not signin_only:
+                act_results = await scan_activities(page)
+                result["activities"] = act_results
+                if act_results and not (len(act_results) == 1 and act_results[0].get("skipped")):
+                    result["items"].append({"type": "活动", "value": f"参与 {len(act_results)} 个"})
 
             # 4. 秒杀（如果当前时间接近秒杀时间）
-            now = datetime.now()
-            try:
-                h, m, _ = map(int, FLASH_SALE_TIME.split(":"))
-                target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-                diff = (target - now).total_seconds()
-                if 0 <= diff < 60:
-                    flash_result = await flash_sale(page)
-                    result["flash"] = flash_result
-                    if flash_result.get("ok"):
-                        result["items"].append({"type": "秒杀", "value": flash_result.get("msg", "完成")})
-            except Exception:
-                pass
+            if not signin_only:
+                now = datetime.now()
+                try:
+                    h, m, _ = map(int, FLASH_SALE_TIME.split(":"))
+                    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                    diff = (target - now).total_seconds()
+                    if 0 <= diff < 60:
+                        flash_result = await flash_sale(page)
+                        result["flash"] = flash_result
+                        if flash_result.get("ok"):
+                            result["items"].append({"type": "秒杀", "value": flash_result.get("msg", "完成")})
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"运行异常: {e}")
