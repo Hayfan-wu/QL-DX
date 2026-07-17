@@ -27,7 +27,7 @@ from config import (
     ENABLE_SIGNIN, ENABLE_ACTIVITY, ENABLE_FLASH_SALE,
     FLASH_SALE_TIME,
     URL_189_HOME, URL_LOGIN, URL_SIGNIN, URL_CODE_EXCHANGE,
-    ACTIVITY_URLS, COOKIE_FILE, LOG_FILE, SCREENSHOT_DIR, PROJECT_DIR,
+    ACTIVITY_URLS, COOKIE_FILE, LOG_FILE, RESULT_FILE, SCREENSHOT_DIR, PROJECT_DIR,
 )
 
 # ==================== 日志 ====================
@@ -42,6 +42,75 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("DX-Telecom")
+
+
+# ==================== 产物记录 ====================
+def _load_results() -> dict:
+    """加载历史产物记录"""
+    if RESULT_FILE.exists():
+        try:
+            return json.loads(RESULT_FILE.read_text())
+        except Exception:
+            pass
+    return {"total": {}, "history": []}
+
+
+def _save_result(run_result: dict):
+    """追加本次执行产物到记录文件"""
+    records = _load_results()
+    run_result["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    records["history"].append(run_result)
+
+    # 累计统计
+    for item in run_result.get("items", []):
+        key = item.get("type", "其他")
+        val = item.get("value", "")
+        if key not in records["total"]:
+            records["total"][key] = []
+        records["total"][key].append({"time": run_result["time"], "value": val})
+
+    RESULT_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2))
+
+
+def query_results() -> str:
+    """查询所有历史产物，返回格式化文本"""
+    records = _load_results()
+    total = records.get("total", {})
+    history = records.get("history", [])
+
+    if not history:
+        return "📋 暂无任务执行记录，请先执行 电信签到 或 电信执行"
+
+    last = history[-1]
+    lines = [
+        "📋 电信任务产物查询",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📅 最近执行: {last.get('time', '未知')}",
+        f"🔄 累计执行: {len(history)} 次",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "📦 累计获得产物:",
+    ]
+
+    if total:
+        for key, items in total.items():
+            lines.append(f"  {key}: {len(items)} 次")
+            # 展示最近3条
+            for item in items[-3:]:
+                lines.append(f"    └ {item['time']}: {item['value']}")
+    else:
+        lines.append("  (暂无产物记录)")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📝 最近一次详情:")
+    for item in last.get("items", []):
+        lines.append(f"  {item.get('type', '?')}: {item.get('value', '?')}")
+
+    if last.get("signin"):
+        lines.append(f"  签到: {last['signin'].get('msg', '-')}")
+    if last.get("error"):
+        lines.append(f"  ❌ 错误: {last['error']}")
+
+    return "\n".join(lines)
 
 
 # ==================== 浏览器辅助 ====================
@@ -403,11 +472,13 @@ async def run_all() -> dict:
         "signin": {},
         "activities": [],
         "flash": {},
+        "items": [],
     }
 
     if not PHONE or not PASSWORD:
         result["error"] = "账号或密码未配置"
         logger.error("账号或密码未配置，请在 .env 中设置 DX_ACCOUNT（格式: 手机号#密码）")
+        _save_result(result)
         return result
 
     logger.info("=" * 60)
@@ -447,14 +518,22 @@ async def run_all() -> dict:
             result["login"] = await login(page)
             if not result["login"]:
                 logger.warning("登录失败，跳过后续步骤")
+                result["items"].append({"type": "系统", "value": "登录失败"})
                 await browser.close()
+                _save_result(result)
                 return result
 
             # 2. 签到翻牌
-            result["signin"] = await signin(page)
+            signin_result = await signin(page)
+            result["signin"] = signin_result
+            if signin_result.get("ok"):
+                result["items"].append({"type": "签到", "value": signin_result.get("msg", "完成")})
 
             # 3. 活动扫描（签到 + 口令兑换）
-            result["activities"] = await scan_activities(page)
+            act_results = await scan_activities(page)
+            result["activities"] = act_results
+            if act_results and not (len(act_results) == 1 and act_results[0].get("skipped")):
+                result["items"].append({"type": "活动", "value": f"参与 {len(act_results)} 个"})
 
             # 4. 秒杀（如果当前时间接近秒杀时间）
             now = datetime.now()
@@ -463,7 +542,10 @@ async def run_all() -> dict:
                 target = now.replace(hour=h, minute=m, second=0, microsecond=0)
                 diff = (target - now).total_seconds()
                 if 0 <= diff < 60:
-                    result["flash"] = await flash_sale(page)
+                    flash_result = await flash_sale(page)
+                    result["flash"] = flash_result
+                    if flash_result.get("ok"):
+                        result["items"].append({"type": "秒杀", "value": flash_result.get("msg", "完成")})
             except Exception:
                 pass
 
@@ -471,9 +553,12 @@ async def run_all() -> dict:
             logger.error(f"运行异常: {e}")
             await _screenshot(page, "fatal_error")
             result["error"] = str(e)
+            result["items"].append({"type": "系统", "value": f"异常: {e}"})
 
         finally:
             await browser.close()
+
+    _save_result(result)
 
     logger.info("=" * 60)
     logger.info("  执行结果")

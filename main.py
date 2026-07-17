@@ -1,15 +1,24 @@
 """
-中国电信话费自动化 - 青龙面板入口
-================================
-青龙面板定时任务配置:
-  task DX-Telecom/main.py
-  cron: 0 8,12,18 * * *
+中国电信话费自动化 - 脚本入口
+==============================
+纯宿主机 + 青龙面板通用入口。
+
+⚠️ 重要：青龙面板只需创建这一个任务！不要拉取 config.py / __init__.py 等文件为任务。
+
+青龙定时任务:
+  任务名: DX-Telecom
+  命令: task QL-DX/main.py
+  定时: 0 8,12,18 * * *
+
+crontab 定时:
+  0 8,12,18 * * * cd /opt/QL-DX && python3 main.py >> /opt/QL-DX/cron.log 2>&1
 """
 
 import os
 import sys
+import traceback
 
-# 加载 .env 文件（青龙面板兼容）
+# 加载 .env 文件
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_ENV_PATH):
     with open(_ENV_PATH, "r", encoding="utf-8") as f:
@@ -19,33 +28,47 @@ if os.path.exists(_ENV_PATH):
                 key, _, val = line.partition("=")
                 os.environ[key.strip()] = val.strip().strip("\"'")
 
-# 确保项目目录在 sys.path 中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import asyncio
-from config import validate
-from telecom_api import run_all
 
 
 def main():
-    """青龙面板入口"""
+    """脚本入口"""
     print("=" * 50)
-    print("  中国电信话费自动化 - 青龙面板")
+    print("  中国电信话费自动化")
     print("=" * 50)
+
+    # 检查依赖
+    try:
+        from config import validate
+        from telecom_api import run_all
+    except ImportError as e:
+        print(f"❌ 依赖缺失: {e}")
+        print("请运行: pip install playwright requests --break-system-packages")
+        print("请运行: playwright install chromium")
+        return
 
     if not validate():
         print("请先配置环境变量后重试")
         print("必要变量: DX_ACCOUNT（格式: 手机号#密码）")
         return
 
-    result = asyncio.run(run_all())
+    try:
+        import asyncio
+        result = asyncio.run(run_all())
 
-    if result.get("error"):
-        print(f"\n❌ 执行失败: {result['error']}")
-    else:
-        signin_msg = result.get("signin", {}).get("msg", "-")
-        print(f"\n📋 签到: {signin_msg}")
-        print(f"📋 活动: 扫描 {len(result.get('activities', []))} 个")
+        if result.get("error"):
+            print(f"\n❌ 执行失败: {result['error']}")
+        else:
+            signin_msg = result.get("signin", {}).get("msg", "-")
+            print(f"\n📋 签到: {signin_msg}")
+            print(f"📋 活动: 扫描 {len(result.get('activities', []))} 个")
+            items = result.get("items", [])
+            if items:
+                print(f"📦 产物: {' | '.join(f'{i[\"type\"]}:{i[\"value\"]}' for i in items)}")
+
+    except Exception as e:
+        print(f"❌ 未知错误: {e}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

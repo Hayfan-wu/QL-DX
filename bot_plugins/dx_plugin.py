@@ -3,12 +3,13 @@
 中国电信话费自动化 - QQ机器人插件
 ==================================
 QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
-支持多轮会话引导配置、登录后自动提交青龙面板、手动触发任务。
+支持多轮会话引导配置、一键提交青龙面板、手动触发任务、产物查询。
 
 命令列表:
   电信菜单                    - 帮助菜单（含活动产物+命令功能）
   电信登录                    - 多轮引导设置账号密码，完成后自动提交青龙
   电信状态                    - 查看配置状态
+  电信查询                    - 查询所有历史任务产物
   电信签到                    - 手动触发签到
   电信执行                    - 执行全部任务
   电信配置                    - 查看当前所有配置
@@ -26,6 +27,7 @@ from bot.plugins.base import Plugin
 from bot.utils import Log
 from bot.ql_api import ql
 from bot.session import sessions
+from telecom_api import query_results
 
 # ==================== 环境变量定义 ====================
 DX_ENV_VARS = [
@@ -53,6 +55,7 @@ MENU_TEXT = """📱 中国电信话费自动化
 ━━━━━━━━━━━━━━━━━━━━
 🔑 电信登录    - 多轮引导设置账号密码，完成后自动提交青龙
 📊 电信状态    - 查看当前配置和开关状态
+📋 电信查询    - 查询所有历史任务获得的产物
 🎯 电信签到    - 手动触发签到翻牌任务
 🚀 电信执行    - 执行全部自动化任务
 🔧 电信配置    - 查看所有环境变量详情
@@ -113,6 +116,9 @@ class DXPlugin(Plugin):
 
         if sub_cmd == "状态":
             return self._cmd_status(sender_id, group_id)
+
+        if sub_cmd == "查询":
+            return self._cmd_query(sender_id, group_id)
 
         if sub_cmd == "签到":
             return self._cmd_signin(sender_id, group_id)
@@ -314,6 +320,10 @@ class DXPlugin(Plugin):
             f"⏰ 秒杀时间: {env.get('DX_FLASH_SALE_TIME', '10:00:00')}\n"
             f"🖥️  无头模式: {_on_off('DX_HEADLESS')}\n"
         )
+
+    def _cmd_query(self, sender_id, group_id=None):
+        """查询所有历史任务产物"""
+        return query_results()
 
     def _cmd_signin(self, sender_id, group_id=None):
         return self._run_script("签到", ["--signin-only"])

@@ -59,6 +59,7 @@ PAGE_LOAD_WAIT: int = 3
 PROJECT_DIR: Path = Path(__file__).resolve().parent
 COOKIE_FILE: Path = PROJECT_DIR / "cookies.json"
 LOG_FILE: Path = PROJECT_DIR / "dx_telecom.log"
+RESULT_FILE: Path = PROJECT_DIR / "result.json"
 SCREENSHOT_DIR: Path = PROJECT_DIR / "screenshots"
 
 # ==================== 基础URL ====================
