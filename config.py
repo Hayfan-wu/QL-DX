@@ -3,6 +3,10 @@
 =============================
 从 .env 文件和环境变量读取配置，
 支持青龙面板环境变量注入。
+
+活动入口共 17 个，分三类：
+  ✅ 保留 = 全国通用、网页可直接自动化
+  ⚠️ 过滤 = 地区限制 / 需APP / 需兑换码 / 过期
 """
 
 import os
@@ -11,18 +15,15 @@ from typing import Optional
 
 
 def _env(key: str, default: str = "") -> str:
-    """读取环境变量，优先 .env 文件"""
     return os.getenv(key, default)
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
-    """读取布尔型环境变量"""
     val = _env(key, str(default)).lower()
     return val in ("true", "1", "yes", "on")
 
 
 def _env_int(key: str, default: int = 0) -> int:
-    """读取整型环境变量"""
     try:
         return int(_env(key, str(default)))
     except ValueError:
@@ -61,35 +62,78 @@ COOKIE_FILE: Path = PROJECT_DIR / "cookies.json"
 LOG_FILE: Path = PROJECT_DIR / "dx_telecom.log"
 SCREENSHOT_DIR: Path = PROJECT_DIR / "screenshots"
 
-# ==================== 活动URL ====================
+# ==================== 基础URL ====================
 URL_189_HOME: str = "https://www.189.cn"
 URL_LOGIN: str = "https://www.189.cn/login/"
 
-# 签到活动页
-URL_SIGNIN: str = "https://wapact.189.cn:9001/mas-pub-ui/spm/Spring2024?activityCode=ACTCODE20240119MNXBTVOB"
+# ===================================================================
+#  全部 17 个活动入口（含保留/过滤标注）
+# ===================================================================
 
-# 金豆抽奖
-URL_BEAN_LOTTERY: str = "https://wapact.189.cn:9001/JinDouMall/JinDouMall_luckDraw.html"
+# ── 一、核心活动（✅ 保留，全国通用，网页可自动化）──
 
-# 见面礼
-URL_GREETING: str = "https://wappark.189.cn/resources/shortMessage/rearendMoneyWap.html"
+# ① 签到活动页（翻牌抽话费/金豆）
+URL_SIGNIN = "https://wapact.189.cn:9001/mas-pub-ui/spm/Spring2024?activityCode=ACTCODE20240119MNXBTVOB"
 
-# 积分商城
-URL_JF_MALL: str = "https://jf.189.cn"
+# ② 金豆商城转盘抽奖
+URL_BEAN_LOTTERY = "https://wapact.189.cn:9001/JinDouMall/JinDouMall_luckDraw.html"
 
-# 口令兑换
-URL_CODE_EXCHANGE: str = "https://wapact.189.cn:9001/flcj/index.html?welfareId=61ad82d62118ed64c88ec7e6"
+# ③ 见面礼 - 暖心福利包（登录领200金豆，至2026.7.31）
+URL_GREETING = "https://wappark.189.cn/resources/shortMessage/rearendMoneyWap.html"
 
-# 兑换码入口
-URL_REDEEM: str = "https://wapact.189.cn:9001/InvitationCode/inviteesNew4.html"
+# ④ 见面礼短链接（重定向到③）
+URL_GREETING_SHORT = "http://a.189.cn/NeYzRQ"
 
-# 所有活动页面列表
+# ⑤ 积分商城（积分兑话费/流量）
+URL_JF_MALL = "https://jf.189.cn"
+
+# ⑥ 积分商城备用域名
+URL_JF_MALL_ALT = "http://jf.ct10000.com/"
+
+# ⑦ 口令兑换（输入省份口令抽话费，0.66~100元）
+URL_CODE_EXCHANGE = "https://wapact.189.cn:9001/flcj/index.html?welfareId=61ad82d62118ed64c88ec7e6"
+
+
+# ── 二、过滤活动（⚠️ 需兑换码/地区限制/已过期，默认不启用）──
+
+# ⑧ 兑换码兑奖入口 — ⚠️ 需提前获取兑换码，无自动获取途径
+URL_REDEEM = "https://wapact.189.cn:9001/InvitationCode/inviteesNew4.html"
+
+# ⑨ 天津 - 充值抽奖（每充20元抽1次，至2026.7.31）— ⚠️ 地区限制+需充值
+URL_TJ_RECHARGE_DRAW = "https://waptj.189.cn/tj/wap/rechargeDraw.html"
+
+# ⑩ 安徽 - 权益会员日翻牌（每周三~周五）— ⚠️ 地区限制
+URL_AH_MEMBER_DAY = "https://qy.ah.189.cn/member/qyMemberDay/index.html"
+
+# ⑪ 河北 - 周三宠粉日转盘（消耗100翼豆）— ⚠️ 地区限制
+URL_HE_WEDNESDAY = "http://hyzx.he.189.cn/qyportal/static/qy/qypt/Wednesday/wednesday.html"
+
+# ⑫ 湖南 - 聚合权益流量包赠6元话费（首次订购）— ⚠️ 地区限制+需订购
+URL_HN_FLOW_PACK = "https://qy.hn.189.cn/h5app/equity/#/polymerize-equity-flow-index"
+
+# ⑬ 江苏 - 人人有礼 — ⚠️ 地区限制
+URL_JS_EVERYONE_GIFT = "http://wapjs.189.cn/mall/pages/jhAll/index.html"
+
+# ⑭ 江苏 - 签到领流量（已迁移至APP）— ⚠️ 已过期/迁移
+URL_JS_SIGNIN = "http://wapjs.189.cn/mall/pages/signinActivity/index.html"
+
+
+# ── 三、APP专属活动（⚠️ 仅在APP内，网页无法自动化，仅供参考）──
+
+# ⑮ 每日签到领金豆（20-35金豆/天）— APP首页 → 签到
+# ⑯ 金豆兑换话费秒杀（100金豆兑0.5元，每日10:00）— APP金豆商城 → 兑换区
+# ⑰ 金豆兑换话费秒杀（200金豆兑1元，每日14:00）— APP金豆商城 → 兑换区
+
+
+# ===================================================================
+#  实际自动化执行的活动列表（仅保留 ✅ 核心活动）
+# ===================================================================
 ACTIVITY_URLS: list = [
-    URL_SIGNIN,
-    URL_BEAN_LOTTERY,
-    URL_GREETING,
-    URL_CODE_EXCHANGE,
-    URL_REDEEM,
+    URL_SIGNIN,           # ① 签到翻牌
+    URL_BEAN_LOTTERY,     # ② 金豆抽奖
+    URL_GREETING,         # ③ 见面礼
+    URL_JF_MALL,          # ⑤ 积分商城
+    URL_CODE_EXCHANGE,    # ⑦ 口令兑换
 ]
 
 
