@@ -35,19 +35,16 @@ def main():
 
     if not validate():
         print("请先配置环境变量后重试")
-        print("必要变量: DX_PHONE, DX_PASSWORD")
+        print("必要变量: DX_ACCOUNT（格式: 手机号#密码）")
         return
 
     result = asyncio.run(run_all())
 
-    # 输出青龙面板通知格式
     if result.get("error"):
         print(f"\n❌ 执行失败: {result['error']}")
     else:
         signin_msg = result.get("signin", {}).get("msg", "-")
-        exchange_msg = result.get("exchange", {}).get("msg", "-")
         print(f"\n📋 签到: {signin_msg}")
-        print(f"📋 兑换: {exchange_msg}")
         print(f"📋 活动: 扫描 {len(result.get('activities', []))} 个")
 
 

@@ -3,8 +3,8 @@
 =============================
 基于 Playwright 实现：
 - 账号密码登录（Cookie 持久化）
-- 每日签到领金豆
-- 金豆兑换话费
+- 每日签到翻牌领金豆/话费
+- 口令兑换话费
 - 活动扫描与参与
 - 限时秒杀抢购
 """
@@ -24,10 +24,9 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 
 from config import (
     PHONE, PASSWORD, HEADLESS, TIMEOUT, PAGE_LOAD_WAIT,
-    ENABLE_SIGNIN, ENABLE_EXCHANGE, ENABLE_ACTIVITY, ENABLE_FLASH_SALE,
-    MIN_BEANS_TO_EXCHANGE, FLASH_SALE_TIME,
-    URL_189_HOME, URL_LOGIN, URL_SIGNIN, URL_BEAN_LOTTERY,
-    URL_GREETING, URL_JF_MALL, URL_CODE_EXCHANGE,
+    ENABLE_SIGNIN, ENABLE_ACTIVITY, ENABLE_FLASH_SALE,
+    FLASH_SALE_TIME,
+    URL_189_HOME, URL_LOGIN, URL_SIGNIN, URL_CODE_EXCHANGE,
     ACTIVITY_URLS, COOKIE_FILE, LOG_FILE, SCREENSHOT_DIR, PROJECT_DIR,
 )
 
@@ -110,7 +109,6 @@ async def login(page: Page) -> bool:
     logger.info("=" * 50)
     logger.info("开始登录...")
 
-    # 先尝试 Cookie 恢复
     saved = _load_cookies()
     if saved:
         logger.info("发现已保存的 Cookie，尝试恢复会话...")
@@ -123,18 +121,13 @@ async def login(page: Page) -> bool:
         logger.info("Cookie 已过期，重新登录...")
 
     try:
-        # 访问登录页
         await page.goto(URL_LOGIN, wait_until="networkidle", timeout=60000)
         await _random_delay(2, 3)
 
-        # 切换到密码登录
         pwd_tab_selectors = [
-            "text=密码登录",
-            "text=账号密码",
-            "a:has-text('密码')",
-            "span:has-text('密码')",
-            '[class*="password"]',
-            "text=账号登录",
+            "text=密码登录", "text=账号密码",
+            "a:has-text('密码')", "span:has-text('密码')",
+            '[class*="password"]', "text=账号登录",
         ]
         for sel in pwd_tab_selectors:
             if await _safe_click(page, sel, timeout=3):
@@ -142,14 +135,10 @@ async def login(page: Page) -> bool:
                 await _random_delay(1, 2)
                 break
 
-        # 输入手机号
         phone_selectors = [
-            'input[type="tel"]',
-            'input[placeholder*="手机"]',
-            'input[name="phone"]',
-            'input[name="mobile"]',
-            'input[name="account"]',
-            'input[name="username"]',
+            'input[type="tel"]', 'input[placeholder*="手机"]',
+            'input[name="phone"]', 'input[name="mobile"]',
+            'input[name="account"]', 'input[name="username"]',
             "#phone", "#mobile", "#account", "#username",
         ]
         phone_ok = False
@@ -157,14 +146,11 @@ async def login(page: Page) -> bool:
             if await _safe_fill(page, sel, PHONE, timeout=3):
                 phone_ok = True
                 break
-
         if not phone_ok:
-            # 尝试找任意输入框
             inputs = await page.query_selector_all("input")
             if inputs:
                 await inputs[0].fill(PHONE)
                 phone_ok = True
-
         if not phone_ok:
             logger.error("未找到手机号输入框")
             await _screenshot(page, "login_no_phone_input")
@@ -172,12 +158,9 @@ async def login(page: Page) -> bool:
 
         await _random_delay(0.5, 1)
 
-        # 输入密码
         pwd_selectors = [
-            'input[type="password"]',
-            'input[placeholder*="密码"]',
-            'input[name="password"]',
-            'input[name="pwd"]',
+            'input[type="password"]', 'input[placeholder*="密码"]',
+            'input[name="password"]', 'input[name="pwd"]',
             "#password", "#pwd",
         ]
         pwd_ok = False
@@ -185,62 +168,48 @@ async def login(page: Page) -> bool:
             if await _safe_fill(page, sel, PASSWORD, timeout=3):
                 pwd_ok = True
                 break
-
         if not pwd_ok:
             inputs = await page.query_selector_all("input[type='password']")
             if inputs:
                 await inputs[0].fill(PASSWORD)
                 pwd_ok = True
-
         if not pwd_ok:
             logger.error("未找到密码输入框")
             await _screenshot(page, "login_no_pwd_input")
             return False
 
         await _random_delay(0.5, 1)
-
-        # 同意协议（如果有）
         await _safe_click(page, '[class*="agree"]', timeout=2)
         await _safe_click(page, 'input[type="checkbox"]', timeout=2)
 
-        # 点击登录
         login_btn_selectors = [
-            "button:has-text('登录')",
-            'button[type="submit"]',
-            "a:has-text('登录')",
-            '[class*="login-btn"]',
-            "#loginBtn",
-            "text=登 录",
+            "button:has-text('登录')", 'button[type="submit"]',
+            "a:has-text('登录')", '[class*="login-btn"]',
+            "#loginBtn", "text=登 录",
         ]
         clicked = False
         for sel in login_btn_selectors:
             if await _safe_click(page, sel, timeout=3):
                 clicked = True
                 break
-
         if not clicked:
             logger.error("未找到登录按钮")
             await _screenshot(page, "login_no_btn")
             return False
 
-        # 等待登录结果
         await asyncio.sleep(3)
         await _random_delay(2, 4)
 
-        # 检查是否需要验证码
         if await page.query_selector("text=验证码"):
             logger.warning("检测到验证码，尝试处理...")
             await _screenshot(page, "login_captcha")
-            # 等待手动处理（如果无头模式则失败）
             if HEADLESS:
                 logger.error("无头模式下无法处理验证码，请先手动登录一次保存 Cookie")
                 return False
             await asyncio.sleep(30)
 
-        # 验证登录状态
         if await _check_logged_in(page):
             logger.info("登录成功！")
-            # 保存 Cookie
             cookies = await page.context.cookies()
             _save_cookies(cookies)
             logger.info("Cookie 已保存")
@@ -257,14 +226,10 @@ async def login(page: Page) -> bool:
 
 
 async def _check_logged_in(page: Page) -> bool:
-    """检查是否已登录"""
     indicators = [
-        "text=退出登录",
-        "text=我的",
-        '[class*="user-name"]',
-        '[class*="nickname"]',
-        '[class*="avatar"]',
-        "text=已登录",
+        "text=退出登录", "text=我的",
+        '[class*="user-name"]', '[class*="nickname"]',
+        '[class*="avatar"]', "text=已登录",
     ]
     for sel in indicators:
         try:
@@ -272,16 +237,14 @@ async def _check_logged_in(page: Page) -> bool:
                 return True
         except Exception:
             pass
-    # 检查 URL 是否跳离登录页
-    url = page.url
-    if "login" not in url.lower():
+    if "login" not in page.url.lower():
         return True
     return False
 
 
 # ==================== 签到模块 ====================
 async def signin(page: Page) -> dict:
-    """每日签到领金豆"""
+    """每日签到翻牌领金豆/话费"""
     if not ENABLE_SIGNIN:
         return {"ok": False, "skipped": True, "msg": "签到已禁用"}
 
@@ -293,25 +256,17 @@ async def signin(page: Page) -> dict:
         await _random_delay(2, 3)
 
         sign_btn_selectors = [
-            "text=签到",
-            "text=立即签到",
-            "text=每日签到",
-            "button:has-text('签到')",
-            '[class*="sign"]',
-            '[class*="checkin"]',
-            'a:has-text("签到")',
-            "text=点击签到",
+            "text=签到", "text=立即签到", "text=每日签到",
+            "button:has-text('签到')", '[class*="sign"]',
+            '[class*="checkin"]', 'a:has-text("签到")', "text=点击签到",
         ]
-
         for sel in sign_btn_selectors:
             if await _safe_click(page, sel, timeout=3):
                 logger.info("签到点击成功")
                 await _random_delay(2, 3)
                 await _screenshot(page, "signin_ok")
-                # 尝试获取金豆数
                 beans = await _get_beans(page)
                 return {"ok": True, "msg": f"签到成功，金豆约 {beans}"}
-            # 检查是否已签到
             if await page.query_selector("text=已签到"):
                 return {"ok": True, "msg": "今日已签到"}
 
@@ -323,15 +278,11 @@ async def signin(page: Page) -> dict:
         return {"ok": False, "msg": str(e)}
 
 
-# ==================== 金豆模块 ====================
 async def _get_beans(page: Page) -> int:
     """获取当前金豆数量"""
     bean_selectors = [
-        '[class*="bean-count"]',
-        '[class*="bean-num"]',
-        '[class*="point"]',
-        '[class*="jindou"]',
-        'text=金豆',
+        '[class*="bean-count"]', '[class*="bean-num"]',
+        '[class*="point"]', '[class*="jindou"]', 'text=金豆',
     ]
     for sel in bean_selectors:
         text = await _safe_text(page, sel, timeout=2)
@@ -341,74 +292,9 @@ async def _get_beans(page: Page) -> int:
     return 0
 
 
-async def bean_lottery(page: Page) -> dict:
-    """金豆抽奖"""
-    logger.info("金豆抽奖...")
-    try:
-        await page.goto(URL_BEAN_LOTTERY, wait_until="networkidle", timeout=30000)
-        await _random_delay(2, 3)
-
-        draw_selectors = [
-            "text=抽奖",
-            "text=立即抽奖",
-            "text=开始抽奖",
-            '[class*="draw"]',
-            '[class*="lottery"]',
-        ]
-        for sel in draw_selectors:
-            if await _safe_click(page, sel, timeout=3):
-                await _random_delay(2, 4)
-                await _screenshot(page, "lottery_result")
-                return {"ok": True, "msg": "抽奖完成"}
-
-        return {"ok": False, "msg": "未找到抽奖按钮"}
-    except Exception as e:
-        return {"ok": False, "msg": str(e)}
-
-
-async def exchange_beans(page: Page) -> dict:
-    """金豆兑换话费"""
-    if not ENABLE_EXCHANGE:
-        return {"ok": False, "skipped": True, "msg": "兑换已禁用"}
-
-    logger.info("=" * 50)
-    logger.info("检查金豆兑换...")
-
-    try:
-        await page.goto(URL_BEAN_LOTTERY, wait_until="networkidle", timeout=30000)
-        await _random_delay(2, 3)
-
-        beans = await _get_beans(page)
-        logger.info(f"当前金豆: {beans}")
-
-        if beans < MIN_BEANS_TO_EXCHANGE:
-            return {"ok": False, "msg": f"金豆不足 ({beans} < {MIN_BEANS_TO_EXCHANGE})"}
-
-        # 寻找兑换入口
-        exchange_selectors = [
-            "text=兑换话费",
-            "text=话费",
-            "text=1元话费",
-            "text=0.5元话费",
-            'a:has-text("话费")',
-            'button:has-text("兑换")',
-        ]
-        for sel in exchange_selectors:
-            if await _safe_click(page, sel, timeout=3):
-                await _random_delay(1, 2)
-                await _safe_click(page, "text=确认兑换", timeout=3)
-                await _safe_click(page, "text=确定", timeout=3)
-                await _screenshot(page, "exchange_ok")
-                return {"ok": True, "msg": "话费兑换成功"}
-
-        return {"ok": False, "msg": "未找到兑换入口"}
-    except Exception as e:
-        return {"ok": False, "msg": str(e)}
-
-
 # ==================== 活动扫描 ====================
 async def scan_activities(page: Page) -> list:
-    """扫描参与所有活动"""
+    """扫描参与所有活动（签到翻牌 + 口令兑换）"""
     if not ENABLE_ACTIVITY:
         return [{"ok": False, "skipped": True, "msg": "活动扫描已禁用"}]
 
@@ -424,7 +310,6 @@ async def scan_activities(page: Page) -> list:
 
             await _screenshot(page, f"activity_{ACTIVITY_URLS.index(url)}")
 
-            # 自动点击可领取按钮
             btns = [
                 "text=领取", "text=立即参与", "text=抽奖",
                 "text=免费领取", "text=去参与", "text=立即领取",
@@ -464,7 +349,6 @@ async def flash_sale(page: Page) -> dict:
     except ValueError:
         return {"ok": False, "msg": f"时间格式错误: {FLASH_SALE_TIME}"}
 
-    # 等待到秒杀时间
     while True:
         now = datetime.now()
         target = now.replace(hour=h, minute=m, second=s, microsecond=0)
@@ -481,7 +365,6 @@ async def flash_sale(page: Page) -> dict:
     t0 = time.time()
 
     try:
-        # 快速刷新并点击
         await page.goto(URL_189_HOME, wait_until="networkidle", timeout=15000)
         await _random_delay(0.5, 1)
 
@@ -518,19 +401,17 @@ async def run_all() -> dict:
         "phone": PHONE[:3] + "****" + PHONE[-4:] if PHONE else "未设置",
         "login": False,
         "signin": {},
-        "lottery": {},
-        "exchange": {},
         "activities": [],
         "flash": {},
     }
 
     if not PHONE or not PASSWORD:
         result["error"] = "账号或密码未配置"
-        logger.error("账号或密码未配置，请在 .env 中设置 DX_PHONE 和 DX_PASSWORD")
+        logger.error("账号或密码未配置，请在 .env 中设置 DX_ACCOUNT（格式: 手机号#密码）")
         return result
 
     logger.info("=" * 60)
-    logger.info(f"  中国电信话费自动化 v2.0")
+    logger.info(f"  中国电信话费自动化 v2.1")
     logger.info(f"  号码: {result['phone']}")
     logger.info(f"  时间: {result['time']}")
     logger.info("=" * 60)
@@ -569,19 +450,13 @@ async def run_all() -> dict:
                 await browser.close()
                 return result
 
-            # 2. 签到
+            # 2. 签到翻牌
             result["signin"] = await signin(page)
 
-            # 3. 金豆抽奖
-            result["lottery"] = await bean_lottery(page)
-
-            # 4. 金豆兑换
-            result["exchange"] = await exchange_beans(page)
-
-            # 5. 活动扫描
+            # 3. 活动扫描（签到 + 口令兑换）
             result["activities"] = await scan_activities(page)
 
-            # 6. 秒杀（如果当前时间接近秒杀时间）
+            # 4. 秒杀（如果当前时间接近秒杀时间）
             now = datetime.now()
             try:
                 h, m, _ = map(int, FLASH_SALE_TIME.split(":"))
@@ -600,13 +475,10 @@ async def run_all() -> dict:
         finally:
             await browser.close()
 
-    # 打印汇总
     logger.info("=" * 60)
     logger.info("  执行结果")
     logger.info(f"  登录: {'OK' if result['login'] else 'FAIL'}")
     logger.info(f"  签到: {result['signin'].get('msg', '-')}")
-    logger.info(f"  抽奖: {result['lottery'].get('msg', '-')}")
-    logger.info(f"  兑换: {result['exchange'].get('msg', '-')}")
     logger.info(f"  活动: {len(result['activities'])} 个")
     logger.info("=" * 60)
 
