@@ -64,7 +64,8 @@ def main():
             print(f"📋 活动: 扫描 {len(result.get('activities', []))} 个")
             items = result.get("items", [])
             if items:
-                print(f"📦 产物: {' | '.join(f'{i[\"type\"]}:{i[\"value\"]}' for i in items)}")
+                items_str = ' | '.join(f'{i["type"]}:{i["value"]}' for i in items)
+                print(f"📦 产物: {items_str}")
 
     except Exception as e:
         print(f"❌ 未知错误: {e}")
