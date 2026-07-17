@@ -25,7 +25,7 @@ import sys
 from bot.plugins.base import Plugin
 from bot.utils import Log
 from bot.ql_api import ql
-from bot.session import SessionManager
+from bot.session import sessions
 
 # ==================== 环境变量定义 ====================
 DX_ENV_VARS = [
@@ -193,21 +193,21 @@ class DXPlugin(Plugin):
 
     def _cmd_login(self, sender_id, group_id=None):
         """引导设置账号密码 - 多轮会话"""
-        SessionManager.register(sender_id, "dx_login", self._login_session)
+        sessions.set(sender_id, group_id, "dx_login", {})
         return "🔑 请输入你的中国电信手机号（11位数字）："
 
-    def _login_session(self, sender_id, group_id, text):
+    def _login_session(self, sender_id, group_id, text, session):
         """登录会话处理 - 完成后自动提交青龙"""
         text = text.strip()
 
         # 第1步：输入手机号
         if re.match(r"^1[3-9]\d{9}$", text):
-            SessionManager.set_data(sender_id, "dx_phone", text)
+            session["data"]["phone"] = text
             return "📱 手机号已记录，请输入登录密码："
 
         # 第2步：输入密码 → 保存并自动提交青龙
-        if SessionManager.get_data(sender_id, "dx_phone"):
-            phone = SessionManager.get_data(sender_id, "dx_phone")
+        phone = session.get("data", {}).get("phone")
+        if phone:
             pwd = text
             account = f"{phone}#{pwd}"
 
@@ -215,7 +215,7 @@ class DXPlugin(Plugin):
             env["DX_ACCOUNT"] = account
             self._write_env(env)
 
-            SessionManager.clear(sender_id)
+            sessions.clear(sender_id, group_id)
 
             # 自动提交到青龙面板
             submit_result = self._auto_submit(env)
@@ -398,7 +398,7 @@ def register_session_handlers(handlers: dict):
     plugin = DXPlugin()
 
     def dx_login_handler(text, sender_id, group_id, session):
-        return plugin._login_session(sender_id, group_id, text)
+        return plugin._login_session(sender_id, group_id, text, session)
 
     handlers["dx_login"] = dx_login_handler
     Log.ok("DX-Telecom 会话处理器已注册")
