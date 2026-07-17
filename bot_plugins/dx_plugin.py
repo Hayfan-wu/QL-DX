@@ -19,13 +19,11 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
 
 import os
 import re
-import json
 import subprocess
 import sys
-from pathlib import Path
 
 from bot.plugins.base import Plugin
-from bot.utils import send_qq_message, Log, normalize_text
+from bot.utils import Log
 from bot.ql_api import ql
 from bot.session import SessionManager
 
@@ -71,10 +69,10 @@ MENU_TEXT = """📱 中国电信话费自动化
 class DXPlugin(Plugin):
     name = "DX-Telecom"
     commands = [
-        r"^电信",
-        r"^话费",
-        r"^签到",
-        r"^金豆",
+        "电信",
+        "话费",
+        "金豆",
+        "签到",
     ]
 
     def __init__(self):
@@ -85,14 +83,7 @@ class DXPlugin(Plugin):
     # ---------- 命令匹配 ----------
     def match(self, text):
         text = text.strip()
-        for cmd in self.commands:
-            if isinstance(cmd, str) and not cmd.startswith("^"):
-                if text.lower().startswith(cmd.lower()):
-                    return True
-            else:
-                if re.search(cmd, text, re.IGNORECASE):
-                    return True
-        return False
+        return any(text.startswith(cmd) for cmd in self.commands)
 
     # ---------- 消息处理 ----------
     def handle(self, text, sender_id, group_id=None):
@@ -393,7 +384,7 @@ class DXPlugin(Plugin):
 def register_session_handlers(handlers: dict):
     plugin = DXPlugin()
 
-    def dx_login_handler(sender_id, group_id, text):
+    def dx_login_handler(text, sender_id, group_id, session):
         return plugin._login_session(sender_id, group_id, text)
 
     handlers["dx_login"] = dx_login_handler
