@@ -188,8 +188,15 @@ def _save_cache(data: dict):
 
 # ==================== 加密工具 ====================
 def _rsa_encrypt(data: str, public_key_pem: str) -> str:
-    """RSA PKCS1 加密，返回 hex 字符串"""
-    key = RSA.import_key(public_key_pem)
+    """RSA PKCS1 加密，返回 hex 字符串
+    支持纯 base64 字符串自动包装 PEM 格式
+    """
+    if "BEGIN" not in public_key_pem:
+        lines = [public_key_pem[i:i+64] for i in range(0, len(public_key_pem), 64)]
+        pem = "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
+    else:
+        pem = public_key_pem
+    key = RSA.import_key(pem)
     cipher = PKCS1_v1_5.new(key)
     encrypted = cipher.encrypt(data.encode())
     return encrypted.hex()
