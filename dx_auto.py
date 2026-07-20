@@ -483,8 +483,29 @@ class TelecomClient:
                 json=payload,
                 headers={"User-Agent": UA},
             )
-            data = resp.json() if resp.text else {}
-            result_code = data.get("responseData", {}).get("resultCode", -1)
+            logger.info(f"登录响应状态: {resp.status_code}")
+
+            if not resp.text:
+                logger.error("登录响应为空")
+                return False
+
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error(f"登录响应非JSON: {resp.text[:500]}")
+                return False
+
+            if not isinstance(data, dict):
+                logger.error(f"登录响应非dict: {type(data)}, 内容: {str(data)[:300]}")
+                return False
+
+            result_code = data.get("responseData", {}) or {}
+            if isinstance(result_code, dict):
+                result_code = result_code.get("resultCode", -1)
+            else:
+                result_code = str(result_code)
+
+            logger.info(f"登录响应码: {result_code}")
 
             if result_code in ("0000", "3006"):
                 # 3006 "操作成功" 也视为登录成功
