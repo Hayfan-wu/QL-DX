@@ -486,7 +486,8 @@ class TelecomClient:
             data = resp.json() if resp.text else {}
             result_code = data.get("responseData", {}).get("resultCode", -1)
 
-            if result_code == "0000":
+            if result_code in ("0000", "3006"):
+                # 3006 "操作成功" 也视为登录成功
                 login_result = (
                     data.get("responseData", {})
                     .get("data", {})
@@ -494,16 +495,33 @@ class TelecomClient:
                 )
                 self.userId = login_result.get("userId", "")
                 self.token = login_result.get("token", "")
-                logger.info("登录成功")
 
-                # 缓存
-                cache[phone] = {
-                    "token": self.token,
-                    "userId": self.userId,
-                    "t": int(time.time() * 1000),
-                }
-                _save_cache(cache)
-                return True
+                if not self.token and result_code == "3006":
+                    # 3006 时数据结构可能不同，尝试其他路径
+                    resp_data = data.get("responseData", {})
+                    self.userId = resp_data.get("userId", "")
+                    self.token = resp_data.get("token", "")
+                    if not self.token:
+                        # 再尝试顶层
+                        self.userId = data.get("userId", "")
+                        self.token = data.get("token", "")
+
+                if self.token:
+                    logger.info(f"登录成功 [{result_code}]")
+                    # 缓存
+                    cache[phone] = {
+                        "token": self.token,
+                        "userId": self.userId,
+                        "t": int(time.time() * 1000),
+                    }
+                    _save_cache(cache)
+                    return True
+                else:
+                    logger.warning(f"登录返回 [{result_code}] 但无 token，继续尝试")
+                    # 3006 时无 token，可能需要后续步骤获取
+                    if result_code == "3006":
+                        return True  # 继续执行后续流程
+                    return False
             else:
                 msg = (
                     data.get("msg", "")
