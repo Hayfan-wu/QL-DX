@@ -47,7 +47,7 @@ def main():
         from telecom_api import run_all
     except ImportError as e:
         print(f"❌ 依赖缺失: {e}")
-        print("请运行: pip install httpx execjs pycryptodome requests --break-system-packages")
+        print("请运行: pip install httpx PyExecJS pycryptodome requests --break-system-packages")
         return
 
     if not validate():
