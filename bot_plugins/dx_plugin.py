@@ -20,13 +20,24 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
 
 import os
 import re
+import subprocess
+import sys
 import threading
 
 from bot.plugins.base import Plugin
 from bot.utils import Log
 from bot.ql_api import ql
 from bot.session import sessions
-from telecom_api import query_results, run_all
+
+# 项目目录
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 延迟导入 dx_auto 中的公开函数
+def _import_dx():
+    """延迟导入 dx_auto，避免模块加载时就依赖第三方库"""
+    sys.path.insert(0, _PROJECT_DIR)
+    import dx_auto
+    return dx_auto
 
 # ==================== 环境变量定义 ====================
 DX_ENV_VARS = [
@@ -45,10 +56,10 @@ MENU_TEXT = """📱 中国电信话费自动化
 ━━━━━━━━━━━━━━━━━━━━
 📋 活动清单（产物）
 ━━━━━━━━━━━━━━━━━━━━
-① 签到翻牌 → 话费(0.1~100元)、金豆(20~1500)、流量包
-② 口令兑换 → 话费(0.66~100元)
-③ APP签到  → 金豆(20~35个/天)
-④ 金豆秒杀 → 0.5元(10点)/1元(14点)话费
+① 每日签到翻牌 → 金豆(20~1500)、通话时长、流量包
+② 连签奖励兑换 → 金豆、话费券
+③ 首页任务     → 金豆、流量包
+④ 宠物乐园     → 话费券、金豆
 ━━━━━━━━━━━━━━━━━━━━
 🔧 命令功能
 ━━━━━━━━━━━━━━━━━━━━
@@ -79,7 +90,7 @@ class DXPlugin(Plugin):
 
     def __init__(self):
         super().__init__()
-        self.project_dir = None
+        self.project_dir = _PROJECT_DIR
         self._env_path = None
 
     # ---------- 命令匹配 ----------
@@ -140,10 +151,7 @@ class DXPlugin(Plugin):
     def _get_env_path(self):
         if self._env_path:
             return self._env_path
-        if self.project_dir:
-            self._env_path = os.path.join(self.project_dir, ".env")
-        else:
-            self._env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+        self._env_path = os.path.join(self.project_dir, ".env")
         return self._env_path
 
     def _read_env(self) -> dict:
@@ -282,7 +290,7 @@ class DXPlugin(Plugin):
                 "\n━━━━━━━━━━━━━━━━━━━━\n"
                 "请在青龙面板中创建定时任务:\n"
                 "任务名: DX-Telecom\n"
-                "命令: task /opt/QL-DX/main.py\n"
+                "命令: task dx_auto.py\n"
                 "定时: 0 8,12,18 * * *"
             )
             return result
@@ -316,13 +324,16 @@ class DXPlugin(Plugin):
             f"活动: {_on_off('DX_ENABLE_ACTIVITY')}\n"
             f"秒杀: {_on_off('DX_ENABLE_FLASH_SALE')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ 秒杀时间: {env.get('DX_FLASH_SALE_TIME', '10:00:00')}\n"
-            f"🖥️  无头模式: {_on_off('DX_HEADLESS')}\n"
+            f"⏰ 秒杀时间: {env.get('DX_FLASH_SALE_TIME', '10:00:00')}"
         )
 
     def _cmd_query(self, sender_id, group_id=None):
         """查询所有历史任务产物"""
-        return query_results()
+        try:
+            dx = _import_dx()
+            return dx.query_results()
+        except Exception as e:
+            return f"❌ 查询失败: {e}"
 
     def _cmd_signin(self, sender_id, group_id=None):
         return self._run_script("签到", signin_only=True)
@@ -363,34 +374,36 @@ class DXPlugin(Plugin):
         status = "开启 ✅" if enable else "关闭 ❌"
         return f"{status} {arg}"
 
-    # ---------- 脚本执行 ----------
+    # ---------- 脚本执行（subprocess，与 QL-WPS 模式一致）----------
     def _run_script(self, task_name: str, signin_only: bool = False) -> str:
-        """后台线程执行任务，确保产物记录写入 result.json"""
+        """用 subprocess 独立进程执行 dx_auto.py"""
         env = self._read_env()
         phone, pwd = self._parse_account(env)
         if not phone or not pwd:
             return "⚠️ 请先执行 电信登录 设置账号密码"
 
-        # 将 .env 配置注入到当前进程环境变量
-        for k, v in env.items():
-            if v:
-                os.environ[k] = v
+        script_path = os.path.join(self.project_dir, "dx_auto.py")
+        if not os.path.exists(script_path):
+            return f"❌ 脚本未找到: {script_path}"
 
-        # 重新导入以获取最新配置
-        import importlib
-        import config, telecom_api
-        importlib.reload(config)
-        importlib.reload(telecom_api)
-        _run_all = telecom_api.run_all
+        args = [sys.executable, script_path]
+        if signin_only:
+            args.append("--signin-only")
 
-        def _bg_task():
+        def _bg():
             try:
-                result = _run_all(signin_only=signin_only)
-                Log.ok(f"DX 任务完成: {task_name}, items={len(result.get('items', []))}")
+                env_copy = os.environ.copy()
+                env_copy.update(env)
+                proc = subprocess.run(
+                    args, cwd=self.project_dir, env=env_copy,
+                    capture_output=True, text=True, timeout=300,
+                )
+                output = (proc.stdout or "")[-1500:]
+                Log.ok(f"DX {task_name} 完成: {output[:200]}")
             except Exception as e:
-                Log.error(f"DX 任务异常: {task_name}, {e}")
+                Log.error(f"DX {task_name} 异常: {e}")
 
-        t = threading.Thread(target=_bg_task, daemon=True)
+        t = threading.Thread(target=_bg, daemon=True)
         t.start()
 
         return (
