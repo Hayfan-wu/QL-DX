@@ -222,7 +222,7 @@ def _save_cache(data: dict):
 
 # ==================== 加密工具 ====================
 def _rsa_encrypt(data: str, public_key_pem: str) -> str:
-    """RSA PKCS1 加密，返回 hex 字符串
+    """RSA PKCS1 加密，返回 base64 字符串
     支持纯 base64 字符串自动包装 PEM 格式
     """
     # 自动包装 PEM 格式
@@ -234,7 +234,7 @@ def _rsa_encrypt(data: str, public_key_pem: str) -> str:
     key = RSA.import_key(pem)
     cipher = PKCS1_v1_5.new(key)
     encrypted = cipher.encrypt(data.encode())
-    return encrypted.hex()
+    return base64.b64encode(encrypted).decode()
 
 
 def _des3_encrypt(text: str) -> str:
@@ -275,9 +275,23 @@ def _encrypt_para(data: dict) -> str:
     return _rsa_encrypt(json.dumps(data, separators=(",", ":")), PARA_PUBLIC_KEY)
 
 
-def _generate_uuid(phone: str) -> str:
-    """根据手机号生成固定 UUID"""
-    return hashlib.md5(f"CT{phone}DX".encode()).hexdigest()
+def _generate_uuid() -> list:
+    """生成 UUID v4 格式数组（与原始 JS 脚本一致）
+    返回: [8位, 4位, '4xxx', 4位, 12位]
+    """
+    hex_chars = "abcdef0123456789"
+    def _rand(pattern: str) -> str:
+        return "".join(
+            c if c != "x" else random.choice(hex_chars)
+            for c in pattern
+        )
+    return [
+        _rand("xxxxxxxx"),      # 8位
+        _rand("xxxx"),          # 4位
+        _rand("4xxx"),          # 4位，第一位固定为4
+        _rand("xxxx"),          # 4位
+        _rand("xxxxxxxxxxxx"),  # 12位
+    ]
 
 
 def _random_delay(a: float = 0.5, b: float = 2.0):
@@ -425,12 +439,13 @@ class TelecomClient:
                     return True
 
         self.phone = phone
-        uuid = _generate_uuid(phone)
+        uuid_arr = _generate_uuid()
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-        # 构造登录加密串
+        # 构造登录加密串 (uuid.slice(0, 2).join(""))
+        uuid_prefix = "".join(uuid_arr[:2])  # 12位
         login_str = (
-            f"iPhone 14 15.4.{uuid[:2]}{phone}{timestamp}{password}0$$$0."
+            f"iPhone 14 15.4.{uuid_prefix}{phone}{timestamp}{password}0$$$0."
         )
         encrypted = _rsa_encrypt(login_str, LOGIN_PUBLIC_KEY)
 
@@ -453,7 +468,7 @@ class TelecomClient:
                     "loginType": "4",
                     "accountType": "",
                     "loginAuthCipherAsymmertric": encrypted,
-                    "deviceUid": uuid[:3],
+                    "deviceUid": "".join(uuid_arr[:3]),  # 16位
                     "phoneNum": _encode_phone(phone),
                     "isChinatelecom": "0",
                     "systemVersion": "15.4.0",
