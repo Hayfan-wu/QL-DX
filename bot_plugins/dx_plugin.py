@@ -282,7 +282,7 @@ class DXPlugin(Plugin):
                 "\n━━━━━━━━━━━━━━━━━━━━\n"
                 "请在青龙面板中创建定时任务:\n"
                 "任务名: DX-Telecom\n"
-                "命令: task QL-DX/main.py\n"
+                "命令: task /opt/QL-DX/main.py\n"
                 "定时: 0 8,12,18 * * *"
             )
             return result

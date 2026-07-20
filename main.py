@@ -7,7 +7,7 @@
 
 青龙定时任务:
   任务名: DX-Telecom
-  命令: task QL-DX/main.py
+  命令: task /opt/QL-DX/main.py
   定时: 0 8,12,18 * * *
 
 crontab 定时:
