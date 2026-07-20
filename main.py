@@ -3,7 +3,7 @@
 ==============================
 纯宿主机 + 青龙面板通用入口。
 
-⚠️ 重要：青龙面板只需创建这一个任务！不要拉取 config.py / __init__.py 等文件为任务。
+⚠️ 重要：青龙面板只需创建这一个任务！不要拉取其他 .py/.js 文件为任务。
 
 青龙定时任务:
   任务名: DX-Telecom
@@ -12,6 +12,10 @@
 
 crontab 定时:
   0 8,12,18 * * * cd /opt/QL-DX && python3 main.py >> /opt/QL-DX/cron.log 2>&1
+
+依赖安装:
+  pip install httpx execjs pycryptodome requests --break-system-packages
+  (需要 Node.js 运行时支持 execjs)
 """
 
 import os
@@ -34,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def main():
     """脚本入口"""
     print("=" * 50)
-    print("  中国电信话费自动化")
+    print("  中国电信话费自动化 v3.0 (API直调)")
     print("=" * 50)
 
     # 检查依赖
@@ -43,8 +47,7 @@ def main():
         from telecom_api import run_all
     except ImportError as e:
         print(f"❌ 依赖缺失: {e}")
-        print("请运行: pip install playwright requests --break-system-packages")
-        print("请运行: playwright install chromium")
+        print("请运行: pip install httpx execjs pycryptodome requests --break-system-packages")
         return
 
     if not validate():
@@ -52,19 +55,23 @@ def main():
         print("必要变量: DX_ACCOUNT（格式: 手机号#密码）")
         return
 
+    import argparse
+    parser = argparse.ArgumentParser(description="中国电信话费自动化")
+    parser.add_argument("--signin-only", action="store_true", help="仅签到")
+    args = parser.parse_args()
+
     try:
-        import asyncio
-        result = asyncio.run(run_all())
+        result = run_all(signin_only=args.signin_only)
 
         if result.get("error"):
             print(f"\n❌ 执行失败: {result['error']}")
         else:
             signin_msg = result.get("signin", {}).get("msg", "-")
             print(f"\n📋 签到: {signin_msg}")
-            print(f"📋 活动: 扫描 {len(result.get('activities', []))} 个")
+            print(f"📋 活动: {len(result.get('activities', []))} 个")
             items = result.get("items", [])
             if items:
-                items_str = ' | '.join(f'{i["type"]}:{i["value"]}' for i in items)
+                items_str = " | ".join(f'{i["type"]}:{i["value"]}' for i in items)
                 print(f"📦 产物: {items_str}")
 
     except Exception as e:

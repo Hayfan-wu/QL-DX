@@ -18,19 +18,15 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
   签到 / 话费 / 金豆          - 快捷命令
 """
 
-import asyncio
-import importlib
 import os
 import re
+import threading
 
 from bot.plugins.base import Plugin
 from bot.utils import Log
 from bot.ql_api import ql
 from bot.session import sessions
-# 延迟导入，在 _run_script 中注入环境变量后通过 importlib.reload 重新加载
-import config
-import telecom_api
-from telecom_api import query_results
+from telecom_api import query_results, run_all
 
 # ==================== 环境变量定义 ====================
 DX_ENV_VARS = [
@@ -369,7 +365,7 @@ class DXPlugin(Plugin):
 
     # ---------- 脚本执行 ----------
     def _run_script(self, task_name: str, signin_only: bool = False) -> str:
-        """直接在 bot 进程内异步执行任务，确保产物记录写入 result.json"""
+        """后台线程执行任务，确保产物记录写入 result.json"""
         env = self._read_env()
         phone, pwd = self._parse_account(env)
         if not phone or not pwd:
@@ -380,25 +376,22 @@ class DXPlugin(Plugin):
             if v:
                 os.environ[k] = v
 
-        # 重新加载模块，确保 config.PHONE/PASSWORD 等读取到最新环境变量
+        # 重新导入以获取最新配置
+        import importlib
+        import config, telecom_api
         importlib.reload(config)
         importlib.reload(telecom_api)
-        from telecom_api import run_all as _run_all
+        _run_all = telecom_api.run_all
 
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        async def _bg_task():
+        def _bg_task():
             try:
-                result = await _run_all(signin_only=signin_only)
+                result = _run_all(signin_only=signin_only)
                 Log.ok(f"DX 任务完成: {task_name}, items={len(result.get('items', []))}")
             except Exception as e:
                 Log.error(f"DX 任务异常: {task_name}, {e}")
 
-        asyncio.ensure_future(_bg_task(), loop=loop)
+        t = threading.Thread(target=_bg_task, daemon=True)
+        t.start()
 
         return (
             f"🚀 {task_name}任务已提交执行\n"

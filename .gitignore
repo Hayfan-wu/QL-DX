@@ -4,6 +4,12 @@
 # Cookie 缓存
 cookies.json
 
+# Token 缓存
+chinaTelecom_cache.json
+
+# 产物记录
+result.json
+
 # 截图
 screenshots/
 
