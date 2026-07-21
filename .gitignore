@@ -7,6 +7,9 @@ cookies.json
 # Token 缓存
 chinaTelecom_cache.json
 
+# 短信验证状态
+chinaTelecom_verify_state.json
+
 # 产物记录
 result.json
 
