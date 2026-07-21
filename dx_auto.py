@@ -10,25 +10,31 @@
 - dx_auto.py       - 入口脚本（组装各模块，执行主流程）
 
 核心特性:
-- 登录与瑞数反爬完全解耦，登录失败不影响瑞数，瑞数失败不影响登录
-- 瑞数反爬优雅降级：连续失败3次自动标记不可用，业务API继续尝试
-- 统一的错误处理和日志
+- 登录与瑞数反爬完全解耦
+- 瑞数反爬优雅降级：连续失败3次自动标记不可用
+- 3006 短信验证：自动轮询等待验证码文件，支持 QQ 机器人交互
 - Token 缓存避免重复登录
 
+验证码交互流程:
+  1. 脚本检测到 3006 → 写入 verify_state.json (status=pending)
+  2. 脚本每 3 秒轮询 verify_state.json (status==sms_received 时读取 smsCode)
+  3. QQ 机器人: 用户发送 "电信验证码 123456" → 写入 smsCode + status=sms_received
+  4. 脚本读取验证码 → 自动完成登录 → 继续执行全部任务
+  5. 超时 120 秒未收到验证码则退出
+
 青龙定时任务:
-  任务名: DX-Telecom
   命令: task dx_auto.py
   定时: 0 8,12,18 * * *
 
 依赖安装:
   pip install httpx PyExecJS pycryptodome --break-system-packages
-  (需要 Node.js 运行时支持 PyExecJS)
 """
 
 import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -64,8 +70,13 @@ ENABLE_ACTIVITY = os.environ.get("DX_ENABLE_ACTIVITY", "true").lower() in ("true
 ENABLE_FLASH_SALE = os.environ.get("DX_ENABLE_FLASH_SALE", "false").lower() in ("true", "1", "yes", "on")
 FLASH_SALE_TIME = os.environ.get("DX_FLASH_SALE_TIME", "10:00:00")
 
+# 验证码等待配置
+SMS_POLL_INTERVAL = 3       # 轮询间隔（秒）
+SMS_WAIT_TIMEOUT = 120      # 最长等待时间（秒）
+
 # 文件路径
 RESULT_FILE = PROJECT_DIR / "result.json"
+VERIFY_STATE_FILE = PROJECT_DIR / "chinaTelecom_verify_state.json"
 LOG_FILE = PROJECT_DIR / "dx_telecom.log"
 SCREENSHOT_DIR = PROJECT_DIR / "screenshots"
 
@@ -87,6 +98,60 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("DX-Telecom")
+
+
+# ==================== 验证码状态文件操作 ====================
+
+def _read_verify_state() -> dict:
+    """读取验证码状态文件"""
+    if VERIFY_STATE_FILE.exists():
+        try:
+            return json.loads(VERIFY_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_verify_state(state: dict):
+    """写入验证码状态文件"""
+    VERIFY_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _wait_for_sms_code(timeout: int = SMS_WAIT_TIMEOUT) -> str:
+    """轮询等待验证码
+
+    当 verify_state.json 中 status 变为 'sms_received' 时，读取 smsCode 并返回。
+    超时返回空字符串。
+
+    Returns:
+        验证码字符串，超时返回 ""
+    """
+    logger.info(f"等待验证码... (最长等待 {timeout} 秒，每 {SMS_POLL_INTERVAL} 秒轮询一次)")
+    logger.info("请在 QQ 机器人中发送: 电信验证码 <6位数字>")
+    start = time.time()
+    last_notify = 0
+
+    while (time.time() - start) < timeout:
+        state = _read_verify_state()
+
+        if state.get("status") == "sms_received":
+            sms_code = state.get("smsCode", "").strip()
+            if sms_code and len(sms_code) >= 4:
+                logger.info(f"收到验证码: {sms_code}")
+                # 标记为已读取
+                _write_verify_state({**state, "status": "verifying"})
+                return sms_code
+
+        # 每 30 秒提示一次
+        elapsed = int(time.time() - start)
+        if elapsed - last_notify >= 30:
+            logger.info(f"已等待 {elapsed} 秒，继续等待验证码...")
+            last_notify = elapsed
+
+        time.sleep(SMS_POLL_INTERVAL)
+
+    logger.warning(f"等待验证码超时 ({timeout} 秒)")
+    return ""
 
 
 # ==================== 产物记录 ====================
@@ -146,71 +211,15 @@ def query_results() -> str:
     return "\n".join(lines)
 
 
-def login_with_verify_code(sms_code: str, phone: str = "", password: str = "") -> dict:
-    """使用短信验证码完成登录 (供 QQ 机器人等外部系统调用)
-
-    Args:
-        sms_code: 用户收到的短信验证码
-        phone: 手机号（为空时从验证状态文件读取）
-        password: 密码（为空时从验证状态文件读取）
-
-    Returns:
-        {"success": bool, "msg": str, "token": str, "userId": str}
-    """
-    from core.login import LoginClient
-
-    state_file = PROJECT_DIR / "chinaTelecom_verify_state.json"
-    verify_state = {}
-    if state_file.exists():
-        try:
-            verify_state = json.loads(state_file.read_text())
-        except Exception:
-            pass
-
-    if not phone:
-        phone = verify_state.get("phone", "")
-    if not password:
-        password = verify_state.get("password", "")
-    verify_code_token = verify_state.get("verifyCodeToken", "")
-
-    if not phone or not password:
-        return {"success": False, "msg": "未找到登录状态，请先执行登录流程", "token": "", "userId": ""}
-
-    logger.info(f"使用验证码 [{sms_code}] 完成登录...")
-
-    client = LoginClient()
-    try:
-        result = client.login_with_sms(phone, password, sms_code, verify_code_token)
-        if result.success:
-            # 更新验证状态
-            verify_state["status"] = "completed"
-            verify_state["token"] = result.token
-            state_file.write_text(json.dumps(verify_state, ensure_ascii=False, indent=2))
-            return {
-                "success": True,
-                "msg": f"登录成功 [{result.code}]",
-                "token": result.token,
-                "userId": result.user_id,
-            }
-        else:
-            return {
-                "success": False,
-                "msg": f"登录失败 [{result.code}]: {result.msg}",
-                "token": "",
-                "userId": "",
-            }
-    finally:
-        client.close()
-
-
 # ==================== 主流程 ====================
 def run_all(signin_only: bool = False) -> dict:
-    """执行全部自动化任务，返回结果汇总 (供 bot 插件调用)
+    """执行全部自动化任务，返回结果汇总
 
-    Args:
-        signin_only: 仅执行签到翻牌，跳过活动和宠物乐园
+    验证码交互:
+    - 检测到 3006 后自动轮询 verify_state.json
+    - QQ 机器人写入验证码后脚本自动继续
+    - 也支持终端交互式输入
     """
-    # 延迟导入核心模块
     from core.login import LoginClient
     from core.api import TelecomAPI
 
@@ -230,7 +239,7 @@ def run_all(signin_only: bool = False) -> dict:
         return result
 
     logger.info("=" * 60)
-    logger.info("  中国电信话费自动化 v4.0 (模块化架构)")
+    logger.info("  中国电信话费自动化 v4.1 (验证码交互)")
     logger.info(f"  号码: {result['phone']}")
     logger.info(f"  时间: {result['time']}")
     logger.info("=" * 60)
@@ -251,44 +260,50 @@ def run_all(signin_only: bool = False) -> dict:
         logger.info("")
         logger.info("【第1步】登录")
         login_client = LoginClient()
-        login_client.client = http_client  # 复用 HTTP 客户端
+        login_client.client = http_client
 
         login_result = login_client.login(PHONE, PASSWORD, use_cache=True)
 
         if not login_result.success:
-            result["error"] = f"登录失败: {login_result.msg}"
-            result["items"].append({"type": "系统", "value": f"登录失败 [{login_result.code}]"})
-            logger.error(f"登录失败 [{login_result.code}]: {login_result.msg}")
+            result["items"].append({"type": "系统", "value": f"登录需要验证 [{login_result.code}]"})
+            logger.warning(f"登录响应 [{login_result.code}]: {login_result.msg}")
 
-            # 3006 错误（需要短信验证）的特殊处理
+            # 3006: 需要短信验证码 → 等待验证码
             if login_result.code == "3006":
                 logger.info("")
                 logger.info("=" * 50)
-                logger.info("检测到需要短信验证码验证")
-                logger.info("请使用电信APP完成一次登录，或等待短信验证码")
+                logger.info("检测到需要短信验证码，进入等待模式")
+                logger.info("=" * 50)
 
-                # 交互式环境下提示输入
+                # 优先: 终端交互式输入
                 if sys.stdin.isatty():
-                    logger.info("如果收到短信验证码，请输入（直接回车跳过）:")
+                    logger.info("请输入收到的短信验证码（直接回车跳过）:")
                     try:
                         sms_code = input("短信验证码: ").strip()
                         if sms_code and len(sms_code) >= 4:
-                            logger.info(f"使用验证码 [{sms_code}] 重试登录...")
-                            retry_result = login_client.login_with_sms(
+                            logger.info(f"使用终端输入验证码 [{sms_code}]")
+                            login_result = login_client.login_with_sms(
                                 PHONE, PASSWORD, sms_code, login_result.verify_code_token
                             )
-                            if retry_result.success:
-                                logger.info(f"验证码登录成功 [{retry_result.code}]")
-                                login_result = retry_result
-                            else:
-                                logger.error(f"验证码登录失败: {retry_result.msg}")
                     except EOFError:
-                        logger.info("非交互式环境，跳过验证码输入")
-                else:
-                    logger.info("非交互式终端，无法输入短信验证码")
-                    logger.info("请手动登录电信APP完成验证，或使用支持交互的环境运行")
+                        pass
+
+                # 其次: 轮询文件等待 QQ 机器人写入验证码
+                if not login_result.success:
+                    sms_code = _wait_for_sms_code()
+                    if sms_code:
+                        logger.info(f"使用验证码 [{sms_code}] 重试登录...")
+                        login_result = login_client.login_with_sms(
+                            PHONE, PASSWORD, sms_code, login_result.verify_code_token
+                        )
+                        if login_result.success:
+                            logger.info("验证码登录成功，继续执行任务...")
+                    else:
+                        logger.error("未收到验证码，退出")
 
             if not login_result.success:
+                result["error"] = f"登录失败: {login_result.msg}"
+                logger.error(f"登录最终失败 [{login_result.code}]: {login_result.msg}")
                 _save_result(result)
                 return result
 
@@ -314,14 +329,11 @@ def run_all(signin_only: bool = False) -> dict:
         logger.info("【第3步】初始化业务 API")
         api = TelecomAPI(http_client, PHONE)
 
-        # 先尝试获取 sign（瑞数会在内部自动初始化）
         sign_result = api.get_sign_by_ticket(ticket)
 
         if not sign_result.ok:
             logger.warning(f"获取 sign 失败: {sign_result.msg}")
-            logger.warning("尝试不使用瑞数 Cookie 重新获取 sign...")
-
-            # 如果瑞数初始化失败，重置后再试一次（可能页面结构变了）
+            logger.warning("尝试重置瑞数后重新获取 sign...")
             api._ruishu.reset()
             sign_result = api.get_sign_by_ticket(ticket)
 
@@ -338,7 +350,6 @@ def run_all(signin_only: bool = False) -> dict:
         logger.info("")
         logger.info("【第4步】查询金豆余额")
         import random
-        import time
         time.sleep(random.uniform(0.5, 2.0))
         api.user_coin_info(notify=True)
 
@@ -355,12 +366,7 @@ def run_all(signin_only: bool = False) -> dict:
                 "signed": signin_result.data.get("signed", False),
             }
             if signin_result.ok:
-                coin = signin_result.data.get("coin", 0)
-                msg = signin_result.msg
-                if signin_result.data.get("signed"):
-                    result["items"].append({"type": "签到", "value": msg})
-                else:
-                    result["items"].append({"type": "签到", "value": msg})
+                result["items"].append({"type": "签到", "value": signin_result.msg})
 
             # 连签兑换
             if not signin_only:
@@ -406,7 +412,6 @@ def run_all(signin_only: bool = False) -> dict:
                         "value": f"喂食 {feed_count} 次",
                     })
 
-                # 兑换权益
                 time.sleep(random.uniform(0.5, 2.0))
                 rights_result = api.get_level_rights()
                 if rights_result.ok:

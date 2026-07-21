@@ -380,9 +380,16 @@ class DXPlugin(Plugin):
         status = "开启 ✅" if enable else "关闭 ❌"
         return f"{status} {arg}"
 
-    # ---------- 脚本执行（subprocess，与 QL-WPS 模式一致）----------
+    # ---------- 脚本执行（后台线程，验证码通过文件交接）----------
     def _run_script(self, task_name: str, signin_only: bool = False, sender_id=None, group_id=None) -> str:
-        """用 subprocess 独立进程执行 dx_auto.py"""
+        """用 subprocess 独立进程执行 dx_auto.py
+
+        验证码交互流程:
+        1. 脚本检测到 3006 → 写入 verify_state.json (status=pending)
+        2. 本方法检测到 pending → 提示用户发送验证码
+        3. 用户发送 "电信验证码 123456" → _cmd_verify 写入文件 (status=sms_received)
+        4. 脚本轮询检测到 sms_received → 读取验证码 → 继续执行全部任务
+        """
         env = self._read_env()
         phone, pwd = self._parse_account(env)
         if not phone or not pwd:
@@ -392,7 +399,7 @@ class DXPlugin(Plugin):
         if not os.path.exists(script_path):
             return f"❌ 脚本未找到: {script_path}"
 
-        # 清除旧的验证状态
+        # 清除旧的验证状态（避免脏数据干扰）
         verify_state_path = os.path.join(self.project_dir, "chinaTelecom_verify_state.json")
         if os.path.exists(verify_state_path):
             os.remove(verify_state_path)
@@ -402,49 +409,47 @@ class DXPlugin(Plugin):
             args.append("--signin-only")
 
         def _bg():
+            """后台执行脚本，脚本内部会轮询等待验证码"""
             try:
                 env_copy = os.environ.copy()
                 env_copy.update(env)
                 proc = subprocess.run(
                     args, cwd=self.project_dir, env=env_copy,
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, timeout=600,
                 )
-                output = (proc.stdout or "")[-1500:]
-                Log.ok(f"DX {task_name} 完成: {output[:200]}")
-
-                # 检查是否需要验证码
-                if os.path.exists(verify_state_path):
-                    try:
-                        with open(verify_state_path, "r", encoding="utf-8") as f:
-                            state = json.load(f)
-                        if state.get("status") == "pending":
-                            Log.info(f"DX {task_name} 需要短信验证码验证")
-                            # 这里可以通过机器人的消息发送接口通知用户
-                            # 具体实现取决于机器人框架
-                    except Exception:
-                        pass
+                output = (proc.stdout or "")[-2000:]
+                err_output = (proc.stderr or "")[-500:]
+                Log.ok(f"DX {task_name} 完成 (exit={proc.returncode}): {output[:200]}")
+                if proc.returncode != 0 and err_output:
+                    Log.error(f"DX {task_name} stderr: {err_output[:300]}")
+            except subprocess.TimeoutExpired:
+                Log.error(f"DX {task_name} 超时 (600s)")
             except Exception as e:
                 Log.error(f"DX {task_name} 异常: {e}")
 
         t = threading.Thread(target=_bg, daemon=True)
         t.start()
 
-        # 等待几秒检查是否需要验证码
+        # 等待几秒，检查是否触发 3006 需要验证码
         import time
-        time.sleep(3)
+        time.sleep(5)
         if os.path.exists(verify_state_path):
             try:
                 with open(verify_state_path, "r", encoding="utf-8") as f:
                     state = json.load(f)
                 if state.get("status") == "pending":
-                    sessions.set(sender_id, group_id, "dx_verify", state)
+                    # 记录会话，验证码命令会检查
+                    sessions.set(sender_id, group_id, "dx_verify", {"status": "pending"})
                     return (
-                        f"🚀 {task_name}任务执行中\n"
+                        f"🚀 {task_name}任务已启动\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"⚠️ 检测到需要短信验证码验证\n"
+                        f"⚠️ 登录需要短信验证码\n"
                         f"📱 号码: {phone[:3]}****{phone[-4:]}\n"
-                        f"请发送: 电信验证码 <6位数字>\n"
-                        f"例如: 电信验证码 123456"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"请查看手机短信，然后发送:\n"
+                        f"  电信验证码 123456\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⏰ 脚本将等待 120 秒，超时自动退出"
                     )
             except Exception:
                 pass
@@ -453,38 +458,60 @@ class DXPlugin(Plugin):
             f"🚀 {task_name}任务已提交执行\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"任务将在后台运行，完成后自动记录产物\n"
-            f"执行完毕后发送 电信查询 查看结果"
+            f"发送 电信查询 查看结果"
         )
 
     def _cmd_verify(self, sender_id, group_id, text):
-        """处理短信验证码登录"""
-        session = sessions.get(sender_id, group_id)
-        state = session.get("data") if session else {}
-        if not state or state.get("status") != "pending":
-            return "⚠️ 未找到待验证的登录状态，请先执行 电信签到 或 电信执行"
+        """处理短信验证码 - 写入文件交给正在运行的脚本进程
 
-        # 提取验证码
+        脚本进程每 3 秒轮询 verify_state.json，
+        检测到 status=sms_received 后自动读取验证码并继续执行。
+        """
         code = text.strip()
-        if not code.isdigit() or len(code) < 4:
-            return "⚠️ 验证码格式不正确，请输入纯数字验证码"
 
-        # 调用 dx_auto.login_with_verify_code
+        # 格式校验
+        if not code or not code.isdigit() or len(code) < 4:
+            return "⚠️ 验证码格式不正确，请输入 4-6 位纯数字"
+
+        verify_state_path = os.path.join(self.project_dir, "chinaTelecom_verify_state.json")
+
+        # 读取当前状态
+        if not os.path.exists(verify_state_path):
+            return "⚠️ 没有正在等待验证码的任务，请先执行 电信签到 或 电信执行"
+
         try:
-            sys.path.insert(0, self.project_dir)
-            import dx_auto
-            result = dx_auto.login_with_verify_code(code)
-            sessions.clear(sender_id, group_id)
-            if result.get("success"):
-                return (
-                    f"✅ 验证码登录成功！\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🎉 登录已完成，任务将继续执行\n"
-                    f"发送 电信查询 查看结果"
-                )
-            else:
-                return f"❌ 验证码登录失败: {result.get('msg', '未知错误')}"
-        except Exception as e:
-            return f"❌ 验证码登录异常: {e}"
+            with open(verify_state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            return "⚠️ 验证状态文件异常，请重试"
+
+        current_status = state.get("status", "")
+
+        # 只在 pending 或 verifying 状态下接受验证码
+        if current_status not in ("pending", "verifying"):
+            if current_status == "sms_received":
+                return "⏳ 验证码已收到，脚本正在处理中，请稍候..."
+            if current_status == "completed":
+                return "✅ 验证已完成，无需重复提交"
+            return f"⚠️ 当前状态不允许提交验证码 (status={current_status})"
+
+        # 写入验证码，通知脚本进程
+        state["smsCode"] = code
+        state["status"] = "sms_received"
+        state["receivedAt"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(verify_state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+        sessions.clear(sender_id, group_id)
+        Log.ok(f"DX 验证码已写入文件: {code}")
+
+        return (
+            f"✅ 验证码已提交！\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"验证码: {code}\n"
+            f"脚本正在自动继续执行任务...\n"
+            f"发送 电信查询 查看最终结果"
+        )
 
 
 # ==================== 会话处理器注册 ====================
