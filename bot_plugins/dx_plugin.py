@@ -7,14 +7,14 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
 
 命令列表:
   电信菜单                    - 帮助菜单（含活动产物+命令功能）
-  电信登录                    - 多轮引导设置账号密码，完成后自动提交青龙
+  电信登录                    - 多轮引导设置账号密码+AndroidID，完成后自动提交青龙
   电信状态                    - 查看配置状态
   电信查询                    - 查询所有历史任务产物
-  电信签到                    - 手动触发签到
-  电信执行                    - 执行全部任务
+  电信签到                    - 手动触发签到翻牌任务
+  电信执行                    - 执行全部自动化任务
   电信配置                    - 查看当前所有配置
-  电信开启 签到/活动/秒杀      - 开启功能
-  电信关闭 签到/活动/秒杀      - 关闭功能
+  电信开启 签到/活动/抽奖      - 开启功能
+  电信关闭 签到/活动/抽奖      - 关闭功能
   签到 / 话费 / 金豆          - 快捷命令
 """
 
@@ -40,13 +40,15 @@ def _import_dx():
     return dx_auto
 
 # ==================== 环境变量定义 ====================
-# 主账号变量: chinaTelecomAccount (与原始脚本一致)
-# 兼容变量: DX_ACCOUNT
+# 主账号变量: dxlin (林老师格式)
+# 兼容变量: chinaTelecomAccount + DX_ANDROID_ID
 DX_ENV_VARS = [
-    ("chinaTelecomAccount",        "电信账号（格式: 手机号#密码）"),
+    ("dxlin",                      "电信账号（格式: 手机号#密码#AndroidID）"),
+    ("chinaTelecomAccount",        "电信账号（兼容格式: 手机号#密码）"),
+    ("DX_ANDROID_ID",              "AndroidID（从指定网站获取）"),
     ("DX_ENABLE_SIGNIN",           "启用签到 (true/false)"),
     ("DX_ENABLE_ACTIVITY",         "启用活动扫描 (true/false)"),
-    ("DX_ENABLE_FLASH_SALE",       "启用秒杀 (true/false)"),
+    ("DX_ENABLE_LOTTERY",          "启用抽奖 (true/false)"),
     ("DX_FLASH_SALE_TIME",         "秒杀时间 (HH:MM:SS)"),
     ("DX_HEADLESS",                "无头模式 (true/false)"),
     ("DX_TIMEOUT",                 "超时秒数"),
@@ -61,11 +63,12 @@ MENU_TEXT = """📱 中国电信话费自动化
 ① 每日签到翻牌 → 金豆(20~1500)、通话时长、流量包
 ② 连签奖励兑换 → 金豆、话费券
 ③ 首页任务     → 金豆、流量包
-④ 宠物乐园     → 话费券、金豆
+④ 金豆转盘     → 话费券、金豆
+⑤ 宠物乐园     → 话费券、金豆
 ━━━━━━━━━━━━━━━━━━━━
 🔧 命令功能
 ━━━━━━━━━━━━━━━━━━━━
-🔑 电信登录    - 多轮引导设置账号密码，完成后自动提交青龙
+🔑 电信登录    - 多轮引导设置账号密码+AndroidID，完成后自动提交青龙
 📊 电信状态    - 查看当前配置和开关状态
 📋 电信查询    - 查询所有历史任务获得的产物
 🎯 电信签到    - 手动触发签到翻牌任务
@@ -74,7 +77,7 @@ MENU_TEXT = """📱 中国电信话费自动化
 ✅ 电信开启 XX - 开启指定功能
 ❌ 电信关闭 XX - 关闭指定功能
 ━━━━━━━━━━━━━━━━━━━━
-可开关: 签到 | 活动 | 秒杀
+可开关: 签到 | 活动 | 抽奖
 快捷: 签到 / 话费 / 金豆
 
 项目: github.com/Hayfan-wu/QL-DX"""
@@ -197,37 +200,61 @@ class DXPlugin(Plugin):
             f.write("\n".join(lines))
         Log.ok(f".env 已更新: {p}")
 
-    def _parse_account(self, env: dict):
-        """解析 chinaTelecomAccount / DX_ACCOUNT 为 (phone, password)"""
-        raw = env.get("chinaTelecomAccount") or env.get("DX_ACCOUNT", "")
+    def _parse_account(self, env: dict) -> tuple:
+        """解析账号信息为 (phone, password, android_id)"""
+        # 优先 dxlin 格式
+        raw = env.get("dxlin", "")
         if raw and "#" in raw:
-            return raw.split("#", 1)
-        return ("", "")
+            parts = raw.split("#")
+            if len(parts) >= 3:
+                return parts[0].strip(), parts[1].strip(), parts[2].strip()
+            elif len(parts) == 2:
+                return parts[0].strip(), parts[1].strip(), ""
+        # 兼容旧格式
+        old_acc = env.get("chinaTelecomAccount") or env.get("DX_ACCOUNT", "")
+        if old_acc and "#" in old_acc:
+            parts = old_acc.split("#", 1)
+            return parts[0].strip(), parts[1].strip(), env.get("DX_ANDROID_ID", "")
+        return ("", "", "")
 
     # ---------- 命令实现 ----------
 
     def _cmd_login(self, sender_id, group_id=None):
-        """引导设置账号密码 - 多轮会话"""
+        """引导设置账号密码+AndroidID - 多轮会话"""
         sessions.set(sender_id, group_id, "dx_login", {})
-        return "🔑 请输入你的中国电信手机号（11位数字）："
+        return ("🔑 请输入你的中国电信手机号（11位数字）：\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 提示：需要 AndroidID，请提前从 https://commissions-yields-exception-personally.trycloudflare.com/ 获取")
 
     def _login_session(self, sender_id, group_id, text, session):
         """登录会话处理 - 完成后自动提交青龙"""
         text = text.strip()
+        data = session.get("data", {})
 
         # 第1步：输入手机号
-        if re.match(r"^1[3-9]\d{9}$", text):
-            session["data"]["phone"] = text
+        if "phone" not in data and re.match(r"^1[3-9]\d{9}$", text):
+            data["phone"] = text
+            session["data"] = data
             return "📱 手机号已记录，请输入登录密码："
 
-        # 第2步：输入密码 → 保存并自动提交青龙
-        phone = session.get("data", {}).get("phone")
-        if phone:
-            pwd = text
-            account = f"{phone}#{pwd}"
+        # 第2步：输入密码
+        if "phone" in data and "password" not in data:
+            data["password"] = text
+            session["data"] = data
+            return ("🔐 密码已记录，请输入 AndroidID：\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "💡 获取方式: https://commissions-yields-exception-personally.trycloudflare.com/")
+
+        # 第3步：输入AndroidID → 保存并自动提交青龙
+        if "password" in data and "android_id" not in data:
+            data["android_id"] = text
+            phone = data["phone"]
+            pwd = data["password"]
+            aid = data["android_id"]
+            account = f"{phone}#{pwd}#{aid}"
 
             env = self._read_env()
-            env["chinaTelecomAccount"] = account
+            env["dxlin"] = account
             self._write_env(env)
 
             sessions.clear(sender_id, group_id)
@@ -236,9 +263,11 @@ class DXPlugin(Plugin):
             submit_result = self._auto_submit(env)
 
             return (
-                f"✅ 账号密码已保存！\n"
+                f"✅ 账号配置已保存！\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"📱 手机号: {phone[:3]}****{phone[-4:]}\n"
-                f"🔐 密码: {'*' * len(pwd)}\n\n"
+                f"🔐 密码: {'*' * len(pwd)}\n"
+                f"📱 AndroidID: {aid[:4]}****{aid[-4:]}\n\n"
                 f"{submit_result}"
             )
 
@@ -303,7 +332,7 @@ class DXPlugin(Plugin):
     def _cmd_status(self, sender_id, group_id=None):
         """查看运行状态"""
         env = self._read_env()
-        phone, pwd = self._parse_account(env)
+        phone, pwd, aid = self._parse_account(env)
 
         if phone and len(phone) >= 11:
             phone_display = f"{phone[:3]}****{phone[-4:]}"
@@ -311,6 +340,7 @@ class DXPlugin(Plugin):
             phone_display = "未设置"
 
         pwd_set = "已设置" if pwd else "未设置"
+        aid_set = "已设置" if aid else "未设置"
 
         def _on_off(key):
             v = env.get(key, "true").lower()
@@ -321,10 +351,11 @@ class DXPlugin(Plugin):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 手机号: {phone_display}\n"
             f"🔐 密码:   {pwd_set}\n"
+            f"📱 AndroidID: {aid_set}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"签到: {_on_off('DX_ENABLE_SIGNIN')}\n"
             f"活动: {_on_off('DX_ENABLE_ACTIVITY')}\n"
-            f"秒杀: {_on_off('DX_ENABLE_FLASH_SALE')}\n"
+            f"抽奖: {_on_off('DX_ENABLE_LOTTERY')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⏰ 秒杀时间: {env.get('DX_FLASH_SALE_TIME', '10:00:00')}"
         )
@@ -348,7 +379,7 @@ class DXPlugin(Plugin):
         lines = ["📋 当前完整配置", "━━━━━━━━━━━━━━━━━━━━"]
         for key, desc in DX_ENV_VARS:
             val = env.get(key, "")
-            if key in ("chinaTelecomAccount", "DX_ACCOUNT"):
+            if key in ("dxlin", "chinaTelecomAccount", "DX_ACCOUNT"):
                 val = "***" if val else "未设置"
             elif not val:
                 val = "(未设置)"
@@ -360,14 +391,14 @@ class DXPlugin(Plugin):
         toggle_map = {
             "签到": "DX_ENABLE_SIGNIN",
             "活动": "DX_ENABLE_ACTIVITY",
-            "秒杀": "DX_ENABLE_FLASH_SALE",
+            "抽奖": "DX_ENABLE_LOTTERY",
             "signin":   "DX_ENABLE_SIGNIN",
             "activity": "DX_ENABLE_ACTIVITY",
-            "flash":    "DX_ENABLE_FLASH_SALE",
+            "lottery":  "DX_ENABLE_LOTTERY",
         }
         key = toggle_map.get(arg.strip())
         if not key:
-            return f"❌ 未知功能: {arg}\n可用: 签到 | 活动 | 秒杀"
+            return f"❌ 未知功能: {arg}\n可用: 签到 | 活动 | 抽奖"
 
         env = self._read_env()
         env[key] = "true" if enable else "false"
@@ -376,13 +407,16 @@ class DXPlugin(Plugin):
         status = "开启 ✅" if enable else "关闭 ❌"
         return f"{status} {arg}"
 
-    # ---------- 脚本执行（后台线程，验证码通过文件交接）----------
+    # ---------- 脚本执行 ----------
     def _run_script(self, task_name: str, signin_only: bool = False, sender_id=None, group_id=None) -> str:
         """用 subprocess 独立进程执行 dx_auto.py"""
         env = self._read_env()
-        phone, pwd = self._parse_account(env)
+        phone, pwd, aid = self._parse_account(env)
         if not phone or not pwd:
             return "⚠️ 请先执行 电信登录 设置账号密码"
+        if not aid:
+            return ("⚠️ 缺少 AndroidID，请先执行 电信登录 重新配置\n"
+                    "💡 AndroidID 获取: https://commissions-yields-exception-personally.trycloudflare.com/")
 
         script_path = os.path.join(self.project_dir, "dx_auto.py")
         if not os.path.exists(script_path):
