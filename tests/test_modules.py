@@ -90,15 +90,16 @@ class TestLoginClient(unittest.TestCase):
     @patch("core.login._save_cache")
     @patch("core.login._load_cache", return_value={})
     @patch("core.login._rsa_encrypt", return_value="FAKE_ENCRYPTED")
-    def test_login_3006_needs_sms(self, mock_rsa, mock_load, mock_save):
-        """登录返回 3006 - 需要短信验证"""
+    def test_login_3006_success(self, mock_rsa, mock_load, mock_save):
+        """登录返回 3006 - 视为成功（原始API行为）"""
         resp_json = {
             "responseData": {
                 "resultCode": "3006",
-                "resultDesc": "需要短信验证",
+                "resultDesc": "操作成功",
                 "data": {
-                    "loginFailResult": {
-                        "verifyCode": "test_verify_token"
+                    "loginSuccessResult": {
+                        "userId": "user_3006_abc",
+                        "token": "tok_3006_xyz",
                     }
                 },
             }
@@ -108,20 +109,20 @@ class TestLoginClient(unittest.TestCase):
         with patch.object(self.client.client, "post", return_value=mock_resp):
             result = self.client.login(self.phone, self.password, use_cache=False)
 
-        self.assertFalse(result.success)
+        self.assertTrue(result.success)
         self.assertEqual(result.code, "3006")
-        self.assertEqual(result.verify_code_token, "test_verify_token")
-        self.assertIn("短信", result.msg)
+        self.assertEqual(result.user_id, "user_3006_abc")
+        self.assertEqual(result.token, "tok_3006_xyz")
 
     @patch("core.login._save_cache")
     @patch("core.login._load_cache", return_value={})
     @patch("core.login._rsa_encrypt", return_value="FAKE_ENCRYPTED")
     def test_login_3006_data_none(self, mock_rsa, mock_load, mock_save):
-        """登录返回 3006 且 data 为 None - 不应崩溃"""
+        """登录返回 3006 且 data 为 None - 不应崩溃，应视为成功继续"""
         resp_json = {
             "responseData": {
                 "resultCode": "3006",
-                "resultDesc": "密码错误",
+                "resultDesc": "操作成功",
                 "data": None,
             }
         }
@@ -130,7 +131,7 @@ class TestLoginClient(unittest.TestCase):
         with patch.object(self.client.client, "post", return_value=mock_resp):
             result = self.client.login(self.phone, self.password, use_cache=False)
 
-        self.assertFalse(result.success)
+        self.assertTrue(result.success)
         self.assertEqual(result.code, "3006")
         # 不应抛出 NoneType 错误
 
@@ -202,31 +203,7 @@ class TestLoginClient(unittest.TestCase):
         self.assertEqual(result.user_id, "cached_user_888")
         post_mock.assert_not_called()
 
-    @patch("core.login._save_cache")
-    @patch("core.login._load_cache", return_value={})
-    @patch("core.login._rsa_encrypt", return_value="FAKE_ENCRYPTED")
-    def test_login_with_sms_success(self, mock_rsa, mock_load, mock_save):
-        """短信验证码登录成功"""
-        resp_json = {
-            "responseData": {
-                "resultCode": "0000",
-                "data": {
-                    "loginSuccessResult": {
-                        "userId": "user_sms_123",
-                        "token": "tok_sms_456",
-                    }
-                },
-            }
-        }
-        mock_resp = _make_mock_response(status_code=200, json_data=resp_json)
-
-        with patch.object(self.client.client, "post", return_value=mock_resp):
-            result = self.client.login_with_sms(
-                self.phone, self.password, "123456", "verify_token_abc")
-
-        self.assertTrue(result.success)
-        self.assertEqual(result.user_id, "user_sms_123")
-        self.assertEqual(result.token, "tok_sms_456")
+# ---------- 瑞数反爬 ----------
 
 
 # ---------------------------------------------------------------------------

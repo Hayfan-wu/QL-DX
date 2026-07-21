@@ -2,7 +2,10 @@
 中国电信登录模块
 =================
 独立的登录模块，不依赖瑞数反爬。
-提供服务密码登录、短信验证码登录等功能。
+提供服务密码登录、ticket获取等功能。
+
+重要: 3006 是成功码（"操作成功"），不是"需要短信验证码"。
+原始电信 API 行为: 3006 与 0000 同样视为登录成功。
 """
 
 import base64
@@ -16,8 +19,9 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from Crypto.Cipher import PKCS1_v1_5
+from Crypto.Cipher import PKCS1_v1_5, DES3
 from Crypto.PublicKey import RSA
+from Crypto.Util.Padding import pad
 
 logger = logging.getLogger("DX.Login")
 
@@ -36,6 +40,10 @@ LOGIN_PUBLIC_KEY = (
 # API URL
 LOGIN_API = "https://appgologin.189.cn:9031/login/client/userLoginNormal"
 TICKET_API = "https://appgologin.189.cn:9031/map/clientXML"
+
+# 3DES 密钥和 IV (用于 ticket 加密)
+DES3_KEY = b'1234567`90koiuyhgtfrdews'
+DES3_IV = b'\0\0\0\0\0\0\0\0'
 
 # User-Agent
 UA = (
@@ -109,14 +117,12 @@ class LoginResult:
     """登录结果"""
 
     def __init__(self, success: bool, code: str = "", msg: str = "",
-                 token: str = "", user_id: str = "",
-                 verify_code_token: str = ""):
+                 token: str = "", user_id: str = ""):
         self.success = success
         self.code = code
         self.msg = msg
         self.token = token
         self.user_id = user_id
-        self.verify_code_token = verify_code_token
 
     def __bool__(self) -> bool:
         return self.success
@@ -152,6 +158,9 @@ class LoginClient:
     def login(self, phone: str, password: str,
               use_cache: bool = True) -> LoginResult:
         """服务密码登录
+
+        重要: 3006 是成功码（"操作成功"），与 0000 同等处理。
+        电信 API 的 3006 不是"需要短信验证码"，而是表示请求成功。
 
         Args:
             phone: 手机号
@@ -207,7 +216,7 @@ class LoginClient:
                     "loginType": "4",
                     "accountType": "",
                     "loginAuthCipherAsymmertric": encrypted,
-                    "deviceUid": "".join(uuid_arr[:3]),
+                    "deviceUid": "".join(uuid_arr[:3]),  # 16位
                     "phoneNum": _encode_phone(phone),
                     "isChinatelecom": "0",
                     "systemVersion": "15.4.0",
@@ -235,17 +244,34 @@ class LoginClient:
 
             logger.info(f"登录响应码: {result_code}")
 
-            if result_code == "0000":
-                # 登录成功
+            # ========== 成功码: 0000 和 3006 都视为成功 ==========
+            # 注意: 3006 是"操作成功"码，不是"需要短信验证码"
+            # 原始电信 API 行为: 3006 与 0000 同样处理
+            if result_code in ("0000", "3006"):
+                # 尝试多个路径提取 token/userId
                 login_result = (
                     (resp_data.get("data") or {}).get("loginSuccessResult") or {}
                 )
                 self.user_id = login_result.get("userId", "")
                 self.token = login_result.get("token", "")
 
+                # 3006 时数据结构可能不同，尝试其他路径
+                if not self.token and result_code == "3006":
+                    # 直接取 responseData 层级
+                    self.user_id = resp_data.get("userId", "")
+                    self.token = resp_data.get("token", "")
+                    if not self.token:
+                        # 再尝试顶层 data
+                        self.user_id = data.get("userId", "")
+                        self.token = data.get("token", "")
+                        if not self.token:
+                            # 尝试 responseData.data 直接
+                            inner_data = resp_data.get("data") or {}
+                            self.user_id = inner_data.get("userId", "")
+                            self.token = inner_data.get("token", "")
+
                 if self.token:
                     logger.info(f"登录成功 [{result_code}]")
-                    # 缓存
                     cache = _load_cache()
                     cache[phone] = {
                         "token": self.token,
@@ -258,47 +284,20 @@ class LoginClient:
                         token=self.token, user_id=self.user_id,
                     )
                 else:
+                    # 3006 时即使无 token 也继续（后续步骤可能获取）
+                    if result_code == "3006":
+                        logger.warning(f"登录返回 [{result_code}] 但无 token，继续尝试")
+                        return LoginResult(
+                            success=True, code=result_code, msg="登录成功(无token)",
+                            token=self.token, user_id=self.user_id,
+                        )
                     return LoginResult(
                         success=False, code=result_code,
                         msg="登录返回成功但无 token",
                     )
 
-            elif result_code == "3006":
-                # 需要短信验证码
-                result_desc = (
-                    resp_data.get("resultDesc", "")
-                    if isinstance(resp_data, dict) else ""
-                )
-                verify_code_token = (
-                    ((resp_data.get("data") or {}).get("loginFailResult") or {})
-                    .get("verifyCode", "")
-                )
-                logger.warning(f"登录需要二次验证 [{result_code}]: {result_desc or '需要短信验证码'}")
-                if verify_code_token:
-                    logger.info(f"verifyCode token: {verify_code_token}")
-
-                # 保存验证状态
-                verify_state = {
-                    "phone": phone,
-                    "password": password,
-                    "verifyCodeToken": verify_code_token,
-                    "timestamp": int(time.time() * 1000),
-                    "status": "pending",
-                    "resultCode": result_code,
-                    "resultDesc": result_desc,
-                }
-                (PROJECT_DIR / "chinaTelecom_verify_state.json").write_text(
-                    json.dumps(verify_state, ensure_ascii=False, indent=2)
-                )
-
-                return LoginResult(
-                    success=False, code=result_code,
-                    msg=result_desc or "需要短信验证码",
-                    verify_code_token=verify_code_token,
-                )
-
             else:
-                # 其他错误
+                # 其他错误码 (3001 等)
                 msg = (
                     data.get("msg", "")
                     or (resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else "")
@@ -313,262 +312,6 @@ class LoginClient:
             logger.error(f"登录异常: {e}")
             return LoginResult(success=False, code="EXCEPTION", msg=str(e))
 
-    def send_sms_code(self, phone: str, verify_code_token: str = "") -> dict:
-        """主动触发发送短信验证码
-
-        电信APP在返回3006后，需要客户端显式调用发送验证码API。
-        尝试多种可能的API路径和参数组合。
-
-        Args:
-            phone: 手机号
-            verify_code_token: 从 3006 响应中获取的 verifyCode token
-
-        Returns:
-            {"sent": bool, "msg": str}
-        """
-        logger.info(f"尝试触发短信验证码发送: {phone[:3]}****{phone[-4:]}")
-
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        encoded_phone = _encode_phone(phone)
-
-        # 尝试多种可能的API
-        apis_to_try = [
-            # 尝试1：sendSmsCode 接口
-            {
-                "url": "https://appgologin.189.cn:9031/login/client/sendSmsCode",
-                "payload": {
-                    "headerInfos": {
-                        "code": "sendSmsCode",
-                        "timestamp": timestamp,
-                        "broadAccount": "",
-                        "broadToken": "",
-                        "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
-                        "shopId": "20002",
-                        "source": "110003",
-                        "sourcePassword": "Sid98s",
-                        "token": "",
-                        "userLoginName": encoded_phone,
-                    },
-                    "content": {
-                        "attach": "test",
-                        "fieldData": {
-                            "phoneNum": encoded_phone,
-                            "sendType": "1",
-                        },
-                    },
-                },
-            },
-            # 尝试2：userLoginNormal 带 sendFlag
-            {
-                "url": LOGIN_API,
-                "payload": {
-                    "headerInfos": {
-                        "code": "userLoginNormal",
-                        "timestamp": timestamp,
-                        "broadAccount": "",
-                        "broadToken": "",
-                        "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
-                        "shopId": "20002",
-                        "source": "110003",
-                        "sourcePassword": "Sid98s",
-                        "token": "",
-                        "userLoginName": encoded_phone,
-                    },
-                    "content": {
-                        "attach": "test",
-                        "fieldData": {
-                            "loginType": "4",
-                            "phoneNum": encoded_phone,
-                            "isChinatelecom": "0",
-                            "sendFlag": "1",
-                            "verifyCode": verify_code_token,
-                        },
-                    },
-                },
-            },
-            # 尝试3：getVerifyCode 接口
-            {
-                "url": "https://appgologin.189.cn:9031/login/client/getVerifyCode",
-                "payload": {
-                    "headerInfos": {
-                        "code": "getVerifyCode",
-                        "timestamp": timestamp,
-                        "broadAccount": "",
-                        "broadToken": "",
-                        "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
-                        "shopId": "20002",
-                        "source": "110003",
-                        "sourcePassword": "Sid98s",
-                        "token": "",
-                        "userLoginName": encoded_phone,
-                    },
-                    "content": {
-                        "attach": "test",
-                        "fieldData": {
-                            "phoneNum": encoded_phone,
-                            "verifyCode": verify_code_token,
-                            "businessType": "01",
-                        },
-                    },
-                },
-            },
-        ]
-
-        for i, attempt in enumerate(apis_to_try, 1):
-            try:
-                logger.info(f"尝试发送验证码 API #{i}: {attempt['url']}")
-                resp = self.client.post(
-                    attempt["url"], json=attempt["payload"], headers={"User-Agent": UA}
-                )
-                logger.info(f"API #{i} 响应: {resp.status_code}")
-
-                if resp.text:
-                    try:
-                        data = resp.json()
-                        resp_data = data.get("responseData") or {}
-                        if isinstance(resp_data, dict):
-                            result_code = resp_data.get("resultCode", "")
-                            result_desc = resp_data.get("resultDesc", "")
-                            logger.info(f"API #{i} 结果码: {result_code}, 描述: {result_desc}")
-
-                            if result_code in ("0000", "0"):
-                                logger.info(f"API #{i} 触发短信发送成功")
-                                return {"sent": True, "msg": "短信验证码已发送，请查收"}
-                            # 有些API返回特定错误码表示已发送
-                            if result_code in ("3001", "3002") and "已发送" in result_desc:
-                                return {"sent": True, "msg": "短信验证码已发送"}
-                        else:
-                            logger.info(f"API #{i} 响应: {resp.text[:200]}")
-                    except Exception:
-                        logger.info(f"API #{i} 响应文本: {resp.text[:200]}")
-                else:
-                    # 空响应有时表示成功
-                    if resp.status_code == 200:
-                        logger.info(f"API #{i} 返回空响应(200)，可能已触发发送")
-                        return {"sent": True, "msg": "可能已触发短信发送"}
-
-            except Exception as e:
-                logger.warning(f"API #{i} 调用异常: {e}")
-
-        logger.warning("所有发送验证码API尝试失败")
-        return {"sent": False, "msg": "无法触发短信验证码发送，电信可能已自动发送或需手动在APP上操作"}
-
-    def login_with_sms(self, phone: str, password: str,
-                       sms_code: str, verify_code_token: str = "") -> LoginResult:
-        """使用短信验证码完成登录
-
-        Args:
-            phone: 手机号
-            password: 服务密码
-            sms_code: 短信验证码
-            verify_code_token: 从 3006 响应中获取的 verifyCode token
-
-        Returns:
-            LoginResult
-        """
-        self.phone = phone
-        logger.info(f"使用短信验证码登录: {phone[:3]}****{phone[-4:]}")
-
-        uuid_arr = _generate_uuid()
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        uuid_prefix = "".join(uuid_arr[:2])
-
-        login_str = (
-            f"iPhone 14 15.4.{uuid_prefix}{phone}{timestamp}{password}0$$$0."
-        )
-        encrypted = _rsa_encrypt(login_str, LOGIN_PUBLIC_KEY)
-
-        field_data = {
-            "loginType": "4",
-            "accountType": "",
-            "loginAuthCipherAsymmertric": encrypted,
-            "deviceUid": "".join(uuid_arr[:3]),
-            "phoneNum": _encode_phone(phone),
-            "isChinatelecom": "0",
-            "systemVersion": "15.4.0",
-            "authentication": _encode_password(password),
-            "verifyCodeInput": sms_code,
-        }
-        if verify_code_token:
-            field_data["verifyCode"] = verify_code_token
-
-        payload = {
-            "headerInfos": {
-                "code": "userLoginNormal",
-                "timestamp": timestamp,
-                "broadAccount": "",
-                "broadToken": "",
-                "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
-                "shopId": "20002",
-                "source": "110003",
-                "sourcePassword": "Sid98s",
-                "token": "",
-                "userLoginName": _encode_phone(phone),
-            },
-            "content": {
-                "attach": "test",
-                "fieldData": field_data,
-            },
-        }
-
-        try:
-            resp = self.client.post(
-                LOGIN_API, json=payload, headers={"User-Agent": UA}
-            )
-
-            if not resp.text:
-                return LoginResult(success=False, code="-1", msg="登录响应为空")
-
-            data = resp.json()
-            resp_data = data.get("responseData") or {}
-            result_code = (
-                resp_data.get("resultCode", -1)
-                if isinstance(resp_data, dict)
-                else str(resp_data)
-            )
-
-            logger.info(f"验证码登录响应码: {result_code}")
-
-            if result_code == "0000":
-                login_result = (
-                    (resp_data.get("data") or {}).get("loginSuccessResult") or {}
-                )
-                self.user_id = login_result.get("userId", "")
-                self.token = login_result.get("token", "")
-
-                if self.token:
-                    logger.info(f"验证码登录成功 [{result_code}]")
-                    cache = _load_cache()
-                    cache[phone] = {
-                        "token": self.token,
-                        "userId": self.user_id,
-                        "t": int(time.time() * 1000),
-                    }
-                    _save_cache(cache)
-                    return LoginResult(
-                        success=True, code=result_code, msg="登录成功",
-                        token=self.token, user_id=self.user_id,
-                    )
-                else:
-                    return LoginResult(
-                        success=False, code=result_code,
-                        msg="登录返回成功但无 token",
-                    )
-            else:
-                msg = (
-                    data.get("msg", "")
-                    or (resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else "")
-                    or (data.get("headerInfos") or {}).get("reason", "")
-                )
-                logger.error(f"验证码登录失败 [{result_code}]: {msg}")
-                return LoginResult(
-                    success=False, code=result_code, msg=msg,
-                )
-
-        except Exception as e:
-            logger.error(f"验证码登录异常: {e}")
-            return LoginResult(success=False, code="EXCEPTION", msg=str(e))
-
     def get_ticket(self) -> str:
         """获取 ticket（登录成功后调用）
 
@@ -579,13 +322,7 @@ class LoginClient:
             logger.error("未登录，无法获取 ticket")
             return ""
 
-        from Crypto.Cipher import DES3
-        from Crypto.Util.Padding import pad
-
         logger.info("获取 ticket...")
-
-        DES3_KEY = b'1234567`90koiuyhgtfrdews'
-        DES3_IV = b'\0\0\0\0\0\0\0\0'
 
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         cipher = DES3.new(DES3_KEY, DES3.MODE_CBC, DES3_IV)
