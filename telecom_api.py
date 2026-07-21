@@ -450,31 +450,16 @@ class TelecomClient:
                 logger.error(f"登录响应非dict: {type(data)}, 内容: {str(data)[:300]}")
                 return False
 
-            result_code = data.get("responseData", {}) or {}
-            if isinstance(result_code, dict):
-                result_code = result_code.get("resultCode", -1)
-            else:
-                result_code = str(result_code)
+            resp_data = data.get("responseData") or {}
+            result_code = resp_data.get("resultCode", -1) if isinstance(resp_data, dict) else str(resp_data)
 
             logger.info(f"登录响应码: {result_code}")
 
-            if result_code in ("0000", "3006"):
-                # 3006 "操作成功" 也视为登录成功
-                login_result = (
-                    data.get("responseData", {})
-                    .get("data", {})
-                    .get("loginSuccessResult", {})
-                )
+            if result_code == "0000":
+                # 正常登录成功
+                login_result = (resp_data.get("data") or {}).get("loginSuccessResult") or {}
                 self.userId = login_result.get("userId", "")
                 self.token = login_result.get("token", "")
-
-                if not self.token and result_code == "3006":
-                    resp_data = data.get("responseData", {})
-                    self.userId = resp_data.get("userId", "")
-                    self.token = resp_data.get("token", "")
-                    if not self.token:
-                        self.userId = data.get("userId", "")
-                        self.token = data.get("token", "")
 
                 if self.token:
                     logger.info(f"登录成功 [{result_code}]")
@@ -486,15 +471,19 @@ class TelecomClient:
                     _save_cache(cache)
                     return True
                 else:
-                    logger.warning(f"登录返回 [{result_code}] 但无 token，继续尝试")
-                    if result_code == "3006":
-                        return True
+                    logger.error(f"登录返回 [{result_code}] 但无 token")
                     return False
+            elif result_code == "3006":
+                # 3006 通常表示需要短信验证/密码过期/账号异常，并非真正登录成功
+                result_desc = resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else ""
+                logger.error(f"登录失败 [{result_code}]: {result_desc or '可能需要短信验证或密码已过期，请手动登录电信APP确认账号状态'}")
+                logger.debug(f"完整响应: {json.dumps(data, ensure_ascii=False)[:500]}")
+                return False
             else:
                 msg = (
                     data.get("msg", "")
-                    or data.get("responseData", {}).get("resultDesc", "")
-                    or data.get("headerInfos", {}).get("reason", "")
+                    or (resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else "")
+                    or (data.get("headerInfos") or {}).get("reason", "")
                 )
                 logger.error(f"登录失败 [{result_code}]: {msg}")
                 return False
