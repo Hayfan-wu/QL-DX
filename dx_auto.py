@@ -268,12 +268,28 @@ def run_all(signin_only: bool = False) -> dict:
             result["items"].append({"type": "系统", "value": f"登录需要验证 [{login_result.code}]"})
             logger.warning(f"登录响应 [{login_result.code}]: {login_result.msg}")
 
-            # 3006: 需要短信验证码 → 等待验证码
+            # 3006: 需要短信验证码 → 主动触发发送 → 等待验证码
             if login_result.code == "3006":
                 logger.info("")
                 logger.info("=" * 50)
-                logger.info("检测到需要短信验证码，进入等待模式")
+                logger.info("检测到需要短信验证码")
                 logger.info("=" * 50)
+
+                # 先主动触发短信发送（电信不会自动发送，需要客户端显式请求）
+                send_result = login_client.send_sms_code(
+                    PHONE, login_result.verify_code_token
+                )
+                if send_result["sent"]:
+                    logger.info(f"✅ {send_result['msg']}")
+                else:
+                    logger.warning(f"⚠️ {send_result['msg']}")
+                    logger.info("如果 60 秒内未收到短信，可能是:")
+                    logger.info("  1. 电信已自动发送，请检查手机短信")
+                    logger.info("  2. 账号被限制，需在电信APP手动登录一次")
+                    logger.info("  3. 短信被拦截，请检查垃圾短信/黑名单")
+
+                logger.info("")
+                logger.info("进入验证码等待模式...")
 
                 # 优先: 终端交互式输入
                 if sys.stdin.isatty():
