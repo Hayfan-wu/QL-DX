@@ -226,9 +226,16 @@ def login_v2(phone: str, password: str, android_id: str):
         log(f"[登录失败] {m_phone} 响应非JSON")
         return None
 
-    login_data = res.get('responseData', {}).get('data', {}).get('loginSuccessResult')
+    # 调试：打印完整登录响应
+    resp_data = res.get('responseData') or {}
+    result_code = resp_data.get('resultCode', '') if isinstance(resp_data, dict) else ''
+    result_desc = resp_data.get('resultDesc', '') if isinstance(resp_data, dict) else ''
+    log(f"[登录响应] {m_phone} resultCode={result_code}, resultDesc={result_desc}")
+    log(f"[登录响应] {m_phone} 完整数据: {json.dumps(res, ensure_ascii=False)[:500]}")
+
+    login_data = resp_data.get('data', {}).get('loginSuccessResult') if isinstance(resp_data, dict) else None
     if not login_data:
-        err_msg = res.get('responseData', {}).get('data', {}).get('resultMsg') or '接口返回无登录数据'
+        err_msg = (resp_data.get('data', {}).get('resultMsg', '') if isinstance(resp_data, dict) else '') or '接口返回无登录数据'
         log(f"[登录失败] {m_phone}: {err_msg}")
         return None
 
