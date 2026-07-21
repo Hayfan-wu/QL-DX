@@ -173,6 +173,125 @@ def _save_result(run_result: dict):
     RESULT_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2))
 
 
+def login_with_verify_code(sms_code: str, phone: str = "", password: str = "") -> dict:
+    """使用短信验证码完成登录 (供 QQ 机器人等外部系统调用)
+
+    Args:
+        sms_code: 用户收到的短信验证码
+        phone: 手机号（为空时从验证状态文件读取）
+        password: 密码（为空时从验证状态文件读取）
+
+    Returns:
+        {"success": bool, "msg": str, "token": str, "userId": str}
+    """
+    state_file = PROJECT_DIR / "chinaTelecom_verify_state.json"
+    verify_state = {}
+    if state_file.exists():
+        try:
+            verify_state = json.loads(state_file.read_text())
+        except Exception:
+            pass
+
+    if not phone:
+        phone = verify_state.get("phone", "")
+    if not password:
+        password = verify_state.get("password", "")
+    verify_code_token = verify_state.get("verifyCodeToken", "")
+
+    if not phone or not password:
+        return {"success": False, "msg": "未找到登录状态，请先执行登录流程", "token": "", "userId": ""}
+
+    logger.info(f"使用验证码 [{sms_code}] 完成登录...")
+
+    client = TelecomClient()
+    try:
+        uuid_arr = _generate_uuid()
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        uuid_prefix = "".join(uuid_arr[:2])
+        login_str = (
+            f"iPhone 14 15.4.{uuid_prefix}{phone}{timestamp}{password}0$$$0."
+        )
+        encrypted = _rsa_encrypt(login_str, LOGIN_PUBLIC_KEY)
+
+        field_data = {
+            "loginType": "4",
+            "accountType": "",
+            "loginAuthCipherAsymmertric": encrypted,
+            "deviceUid": "".join(uuid_arr[:3]),
+            "phoneNum": _encode_phone(phone),
+            "isChinatelecom": "0",
+            "systemVersion": "15.4.0",
+            "authentication": _encode_password(password),
+            "verifyCodeInput": sms_code,
+        }
+        if verify_code_token:
+            field_data["verifyCode"] = verify_code_token
+
+        payload = {
+            "headerInfos": {
+                "code": "userLoginNormal",
+                "timestamp": timestamp,
+                "broadAccount": "",
+                "broadToken": "",
+                "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
+                "shopId": "20002",
+                "source": "110003",
+                "sourcePassword": "Sid98s",
+                "token": "",
+                "userLoginName": _encode_phone(phone),
+            },
+            "content": {
+                "attach": "test",
+                "fieldData": field_data,
+            },
+        }
+
+        resp = client.client.post(LOGIN_API, json=payload, headers={"User-Agent": UA})
+        if not resp.text:
+            return {"success": False, "msg": "登录响应为空", "token": "", "userId": ""}
+
+        data = resp.json()
+        resp_data = data.get("responseData") or {}
+        result_code = resp_data.get("resultCode", -1) if isinstance(resp_data, dict) else str(resp_data)
+
+        if result_code == "0000":
+            login_result = (resp_data.get("data") or {}).get("loginSuccessResult") or {}
+            user_id = login_result.get("userId", "")
+            token = login_result.get("token", "")
+            if token:
+                # 保存到缓存
+                cache = _load_cache()
+                cache[phone] = {
+                    "token": token,
+                    "userId": user_id,
+                    "t": int(time.time() * 1000),
+                }
+                _save_cache(cache)
+                # 清除验证状态
+                verify_state["status"] = "completed"
+                verify_state["token"] = token
+                state_file.write_text(json.dumps(verify_state, ensure_ascii=False, indent=2))
+                logger.info(f"验证码登录成功 [{result_code}]")
+                client.close()
+                return {"success": True, "msg": f"登录成功 [{result_code}]", "token": token, "userId": user_id}
+            else:
+                client.close()
+                return {"success": False, "msg": f"登录返回成功但无 token", "token": "", "userId": ""}
+        else:
+            msg = (
+                data.get("msg", "")
+                or (resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else "")
+                or (data.get("headerInfos") or {}).get("reason", "")
+            )
+            client.close()
+            return {"success": False, "msg": f"登录失败 [{result_code}]: {msg}", "token": "", "userId": ""}
+
+    except Exception as e:
+        logger.error(f"验证码登录异常: {e}")
+        client.close()
+        return {"success": False, "msg": f"异常: {e}", "token": "", "userId": ""}
+
+
 def query_results() -> str:
     """查询所有历史任务产物 (供 bot 插件调用)"""
     records = _load_results()
@@ -532,6 +651,21 @@ class TelecomClient:
                 logger.warning(f"登录需要二次验证 [{result_code}]: {result_desc or '需要短信验证码'}")
                 if verify_code_token:
                     logger.info(f"verifyCode token: {verify_code_token}")
+
+                # 保存验证状态，供 QQ 机器人等外部系统读取
+                verify_state = {
+                    "phone": phone,
+                    "password": password,
+                    "verifyCodeToken": verify_code_token,
+                    "timestamp": int(time.time() * 1000),
+                    "status": "pending",
+                    "resultCode": result_code,
+                    "resultDesc": result_desc,
+                }
+                (PROJECT_DIR / "chinaTelecom_verify_state.json").write_text(
+                    json.dumps(verify_state, ensure_ascii=False, indent=2)
+                )
+                logger.info("验证状态已保存到 chinaTelecom_verify_state.json")
 
                 # 交互式短信验证码支持
                 if sys.stdin.isatty():

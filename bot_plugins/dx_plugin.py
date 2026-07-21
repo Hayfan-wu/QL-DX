@@ -40,8 +40,10 @@ def _import_dx():
     return dx_auto
 
 # ==================== 环境变量定义 ====================
+# 主账号变量: chinaTelecomAccount (与原始脚本一致)
+# 兼容变量: DX_ACCOUNT
 DX_ENV_VARS = [
-    ("DX_ACCOUNT",                 "电信账号（格式: 手机号#密码）"),
+    ("chinaTelecomAccount",        "电信账号（格式: 手机号#密码）"),
     ("DX_ENABLE_SIGNIN",           "启用签到 (true/false)"),
     ("DX_ENABLE_ACTIVITY",         "启用活动扫描 (true/false)"),
     ("DX_ENABLE_FLASH_SALE",       "启用秒杀 (true/false)"),
@@ -68,6 +70,7 @@ MENU_TEXT = """📱 中国电信话费自动化
 📋 电信查询    - 查询所有历史任务获得的产物
 🎯 电信签到    - 手动触发签到翻牌任务
 🚀 电信执行    - 执行全部自动化任务
+🔢 电信验证码  - 输入短信验证码完成登录验证
 🔧 电信配置    - 查看所有环境变量详情
 ✅ 电信开启 XX - 开启指定功能
 ❌ 电信关闭 XX - 关闭指定功能
@@ -136,6 +139,9 @@ class DXPlugin(Plugin):
         if sub_cmd == "执行":
             return self._cmd_run(sender_id, group_id)
 
+        if sub_cmd == "验证码":
+            return self._cmd_verify(sender_id, group_id, arg)
+
         if sub_cmd == "配置":
             return self._cmd_config(sender_id, group_id)
 
@@ -196,8 +202,8 @@ class DXPlugin(Plugin):
         Log.ok(f".env 已更新: {p}")
 
     def _parse_account(self, env: dict):
-        """解析 DX_ACCOUNT 为 (phone, password)"""
-        raw = env.get("DX_ACCOUNT", "")
+        """解析 chinaTelecomAccount / DX_ACCOUNT 为 (phone, password)"""
+        raw = env.get("chinaTelecomAccount") or env.get("DX_ACCOUNT", "")
         if raw and "#" in raw:
             return raw.split("#", 1)
         return ("", "")
@@ -225,7 +231,7 @@ class DXPlugin(Plugin):
             account = f"{phone}#{pwd}"
 
             env = self._read_env()
-            env["DX_ACCOUNT"] = account
+            env["chinaTelecomAccount"] = account
             self._write_env(env)
 
             sessions.clear(sender_id, group_id)
@@ -336,17 +342,17 @@ class DXPlugin(Plugin):
             return f"❌ 查询失败: {e}"
 
     def _cmd_signin(self, sender_id, group_id=None):
-        return self._run_script("签到", signin_only=True)
+        return self._run_script("签到", signin_only=True, sender_id=sender_id, group_id=group_id)
 
     def _cmd_run(self, sender_id, group_id=None):
-        return self._run_script("全部任务", signin_only=False)
+        return self._run_script("全部任务", signin_only=False, sender_id=sender_id, group_id=group_id)
 
     def _cmd_config(self, sender_id, group_id=None):
         env = self._read_env()
         lines = ["📋 当前完整配置", "━━━━━━━━━━━━━━━━━━━━"]
         for key, desc in DX_ENV_VARS:
             val = env.get(key, "")
-            if key == "DX_ACCOUNT":
+            if key in ("chinaTelecomAccount", "DX_ACCOUNT"):
                 val = "***" if val else "未设置"
             elif not val:
                 val = "(未设置)"
@@ -375,7 +381,7 @@ class DXPlugin(Plugin):
         return f"{status} {arg}"
 
     # ---------- 脚本执行（subprocess，与 QL-WPS 模式一致）----------
-    def _run_script(self, task_name: str, signin_only: bool = False) -> str:
+    def _run_script(self, task_name: str, signin_only: bool = False, sender_id=None, group_id=None) -> str:
         """用 subprocess 独立进程执行 dx_auto.py"""
         env = self._read_env()
         phone, pwd = self._parse_account(env)
@@ -385,6 +391,11 @@ class DXPlugin(Plugin):
         script_path = os.path.join(self.project_dir, "dx_auto.py")
         if not os.path.exists(script_path):
             return f"❌ 脚本未找到: {script_path}"
+
+        # 清除旧的验证状态
+        verify_state_path = os.path.join(self.project_dir, "chinaTelecom_verify_state.json")
+        if os.path.exists(verify_state_path):
+            os.remove(verify_state_path)
 
         args = [sys.executable, script_path]
         if signin_only:
@@ -400,11 +411,43 @@ class DXPlugin(Plugin):
                 )
                 output = (proc.stdout or "")[-1500:]
                 Log.ok(f"DX {task_name} 完成: {output[:200]}")
+
+                # 检查是否需要验证码
+                if os.path.exists(verify_state_path):
+                    try:
+                        with open(verify_state_path, "r", encoding="utf-8") as f:
+                            state = json.load(f)
+                        if state.get("status") == "pending":
+                            Log.info(f"DX {task_name} 需要短信验证码验证")
+                            # 这里可以通过机器人的消息发送接口通知用户
+                            # 具体实现取决于机器人框架
+                    except Exception:
+                        pass
             except Exception as e:
                 Log.error(f"DX {task_name} 异常: {e}")
 
         t = threading.Thread(target=_bg, daemon=True)
         t.start()
+
+        # 等待几秒检查是否需要验证码
+        import time
+        time.sleep(3)
+        if os.path.exists(verify_state_path):
+            try:
+                with open(verify_state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                if state.get("status") == "pending":
+                    sessions.set(sender_id, group_id, "dx_verify", state)
+                    return (
+                        f"🚀 {task_name}任务执行中\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚠️ 检测到需要短信验证码验证\n"
+                        f"📱 号码: {phone[:3]}****{phone[-4:]}\n"
+                        f"请发送: 电信验证码 <6位数字>\n"
+                        f"例如: 电信验证码 123456"
+                    )
+            except Exception:
+                pass
 
         return (
             f"🚀 {task_name}任务已提交执行\n"
@@ -412,6 +455,36 @@ class DXPlugin(Plugin):
             f"任务将在后台运行，完成后自动记录产物\n"
             f"执行完毕后发送 电信查询 查看结果"
         )
+
+    def _cmd_verify(self, sender_id, group_id, text):
+        """处理短信验证码登录"""
+        session = sessions.get(sender_id, group_id)
+        state = session.get("data") if session else {}
+        if not state or state.get("status") != "pending":
+            return "⚠️ 未找到待验证的登录状态，请先执行 电信签到 或 电信执行"
+
+        # 提取验证码
+        code = text.strip()
+        if not code.isdigit() or len(code) < 4:
+            return "⚠️ 验证码格式不正确，请输入纯数字验证码"
+
+        # 调用 dx_auto.login_with_verify_code
+        try:
+            sys.path.insert(0, self.project_dir)
+            import dx_auto
+            result = dx_auto.login_with_verify_code(code)
+            sessions.clear(sender_id, group_id)
+            if result.get("success"):
+                return (
+                    f"✅ 验证码登录成功！\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎉 登录已完成，任务将继续执行\n"
+                    f"发送 电信查询 查看结果"
+                )
+            else:
+                return f"❌ 验证码登录失败: {result.get('msg', '未知错误')}"
+        except Exception as e:
+            return f"❌ 验证码登录异常: {e}"
 
 
 # ==================== 会话处理器注册 ====================
@@ -421,5 +494,9 @@ def register_session_handlers(handlers: dict):
     def dx_login_handler(text, sender_id, group_id, session):
         return plugin._login_session(sender_id, group_id, text, session)
 
+    def dx_verify_handler(text, sender_id, group_id, session):
+        return plugin._cmd_verify(sender_id, group_id, text)
+
     handlers["dx_login"] = dx_login_handler
+    handlers["dx_verify"] = dx_verify_handler
     Log.ok("DX-Telecom 会话处理器已注册")
