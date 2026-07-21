@@ -62,8 +62,9 @@ if _ENV_FILE.exists():
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
-# DX_ACCOUNT 格式: 手机号#密码
-_ACCOUNT_RAW = os.environ.get("DX_ACCOUNT", "")
+# 环境变量名: chinaTelecomAccount (原始脚本) 或 DX_ACCOUNT (兼容)
+# 格式: 手机号#服务密码
+_ACCOUNT_RAW = os.environ.get("chinaTelecomAccount") or os.environ.get("DX_ACCOUNT", "")
 if _ACCOUNT_RAW and "#" in _ACCOUNT_RAW:
     PHONE, PASSWORD = _ACCOUNT_RAW.split("#", 1)
 else:
@@ -1235,7 +1236,7 @@ def run_all(signin_only: bool = False) -> dict:
 
     if not PHONE or not PASSWORD:
         result["error"] = "账号或密码未配置"
-        logger.error("账号或密码未配置，请在 .env 中设置 DX_ACCOUNT（格式: 手机号#密码）")
+        logger.error("账号或密码未配置，请在 .env 中设置 chinaTelecomAccount（格式: 手机号#密码）")
         _save_result(result)
         return result
 

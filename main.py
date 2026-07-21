@@ -52,7 +52,7 @@ def main():
 
     if not validate():
         print("请先配置环境变量后重试")
-        print("必要变量: DX_ACCOUNT（格式: 手机号#密码）")
+        print("必要变量: chinaTelecomAccount（格式: 手机号#密码）")
         return
 
     import argparse

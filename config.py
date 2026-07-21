@@ -29,8 +29,9 @@ def _env_int(key: str, default: int = 0) -> int:
 
 
 # ==================== 电信账号 ====================
-# DX_ACCOUNT 格式: 手机号#密码
-_ACCOUNT_RAW: str = _env("DX_ACCOUNT")
+# 环境变量名: chinaTelecomAccount (原始脚本) 或 DX_ACCOUNT (兼容)
+# 格式: 手机号#服务密码
+_ACCOUNT_RAW: str = _env("chinaTelecomAccount") or _env("DX_ACCOUNT")
 if _ACCOUNT_RAW and "#" in _ACCOUNT_RAW:
     PHONE, PASSWORD = _ACCOUNT_RAW.split("#", 1)
 else:

@@ -476,8 +476,97 @@ class TelecomClient:
             elif result_code == "3006":
                 # 3006 通常表示需要短信验证/密码过期/账号异常，并非真正登录成功
                 result_desc = resp_data.get("resultDesc", "") if isinstance(resp_data, dict) else ""
-                logger.error(f"登录失败 [{result_code}]: {result_desc or '可能需要短信验证或密码已过期，请手动登录电信APP确认账号状态'}")
-                logger.debug(f"完整响应: {json.dumps(data, ensure_ascii=False)[:500]}")
+                verify_code_token = (
+                    (resp_data.get("data") or {}).get("loginFailResult") or {}
+                ).get("verifyCode", "")
+                logger.warning(f"登录需要二次验证 [{result_code}]: {result_desc or '需要短信验证码'}")
+                if verify_code_token:
+                    logger.info(f"verifyCode token: {verify_code_token}")
+
+                # 交互式短信验证码支持
+                if sys.stdin.isatty():
+                    logger.info("=" * 50)
+                    logger.info("检测到需要短信验证码验证")
+                    logger.info("请使用电信APP完成一次登录，或等待短信验证码")
+                    logger.info("如果收到短信验证码，请输入（直接回车跳过）:")
+                    try:
+                        sms_code = input("短信验证码: ").strip()
+                        if sms_code and len(sms_code) >= 4:
+                            logger.info(f"使用验证码 [{sms_code}] 重试登录...")
+                            # 重新构造登录请求，带上验证码
+                            uuid = _generate_uuid(phone)
+                            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                            login_str = (
+                                f"iPhone 14 15.4.{uuid[:2]}{phone}{timestamp}{password}0$$$0."
+                            )
+                            encrypted = _rsa_encrypt(login_str, LOGIN_PUBLIC_KEY)
+
+                            field_data = {
+                                "loginType": "4",
+                                "accountType": "",
+                                "loginAuthCipherAsymmertric": encrypted,
+                                "deviceUid": uuid[:3],
+                                "phoneNum": _encode_phone(phone),
+                                "isChinatelecom": "0",
+                                "systemVersion": "15.4.0",
+                                "authentication": _encode_password(password),
+                            }
+                            field_data["verifyCodeInput"] = sms_code
+                            if verify_code_token:
+                                field_data["verifyCode"] = verify_code_token
+
+                            retry_payload = {
+                                "headerInfos": {
+                                    "code": "userLoginNormal",
+                                    "timestamp": timestamp,
+                                    "broadAccount": "",
+                                    "broadToken": "",
+                                    "clientType": "#10.5.0#channel50#iPhone 14 Pro Max#",
+                                    "shopId": "20002",
+                                    "source": "110003",
+                                    "sourcePassword": "Sid98s",
+                                    "token": "",
+                                    "userLoginName": _encode_phone(phone),
+                                },
+                                "content": {
+                                    "attach": "test",
+                                    "fieldData": field_data,
+                                },
+                            }
+
+                            retry_resp = self.client.post(
+                                LOGIN_API,
+                                json=retry_payload,
+                                headers={"User-Agent": UA},
+                            )
+                            if retry_resp.text:
+                                try:
+                                    retry_data = retry_resp.json()
+                                    retry_rc = (retry_data.get("responseData") or {}).get("resultCode", -1)
+                                    logger.info(f"重试登录响应码: {retry_rc}")
+                                    if retry_rc == "0000":
+                                        retry_result = (
+                                            (retry_data.get("responseData") or {}).get("data") or {}
+                                        ).get("loginSuccessResult") or {}
+                                        self.userId = retry_result.get("userId", "")
+                                        self.token = retry_result.get("token", "")
+                                        if self.token:
+                                            logger.info(f"登录成功 [{retry_rc}]")
+                                            cache[phone] = {
+                                                "token": self.token,
+                                                "userId": self.userId,
+                                                "t": int(time.time() * 1000),
+                                            }
+                                            _save_cache(cache)
+                                            return True
+                                except Exception:
+                                    pass
+                            logger.error("短信验证码登录失败，请确认验证码正确")
+                    except EOFError:
+                        logger.info("非交互式环境，跳过验证码输入")
+                else:
+                    logger.error("非交互式终端，无法输入短信验证码")
+                    logger.error("请手动登录电信APP完成验证，或使用支持交互的环境运行")
                 return False
             else:
                 msg = (
