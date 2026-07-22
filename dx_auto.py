@@ -61,6 +61,9 @@ LOG_FILE = PROJECT_DIR / "dx_telecom.log"
 ENABLE_SIGNIN = os.environ.get("DX_ENABLE_SIGNIN", "true").lower() in ("true", "1", "yes", "on")
 ENABLE_ACTIVITY = os.environ.get("DX_ENABLE_ACTIVITY", "true").lower() in ("true", "1", "yes", "on")
 ENABLE_LOTTERY = os.environ.get("DX_ENABLE_LOTTERY", "true").lower() in ("true", "1", "yes", "on")
+ENABLE_EXCHANGE = os.environ.get("DX_ENABLE_EXCHANGE", "true").lower() in ("true", "1", "yes", "on")
+ENABLE_FLASH_SALE = os.environ.get("DX_ENABLE_FLASH_SALE", "false").lower() in ("true", "1", "yes", "on")
+FLASH_SALE_TIME = os.environ.get("DX_FLASH_SALE_TIME", "10:00:00")
 
 # 密钥
 KEYS = {
@@ -308,6 +311,116 @@ def login_v2(phone: str, password: str, android_id: str):
     return user_info
 
 
+# ==================== 话费券秒杀 ====================
+
+def do_flash_sale(user: dict, sign_header: dict) -> dict:
+    """话费券秒杀
+
+    在指定时间抢话费券。会等待到目标时间点精确执行。
+
+    Args:
+        user: 用户信息
+        sign_header: 带 sign 的请求头
+
+    Returns:
+        dict: {"type": "秒杀", "value": "..."} 或 None
+    """
+    m = mask(user['phoneNbr'])
+    phone = user['phoneNbr']
+
+    # 解析目标秒杀时间
+    try:
+        parts = FLASH_SALE_TIME.split(':')
+        target_h, target_m, target_s = int(parts[0]), int(parts[1]), int(parts[2])
+    except Exception:
+        log(f"[秒杀] {m} 秒杀时间格式错误: {FLASH_SALE_TIME}，应为 HH:MM:SS")
+        return None
+
+    now = datetime.now()
+    target = now.replace(hour=target_h, minute=target_m, second=target_s, microsecond=0)
+
+    # 如果目标时间已过（超过60秒），跳过
+    if (target - now).total_seconds() < -60:
+        log(f"[秒杀] {m} 今日秒杀时间 {FLASH_SALE_TIME} 已过，跳过")
+        return None
+
+    # 等待到秒杀时间（提前2秒开始准备）
+    if target > now:
+        wait_secs = (target - now).total_seconds() - 2
+        if wait_secs > 0:
+            log(f"[秒杀] {m} 等待到 {FLASH_SALE_TIME}，还需 {int(wait_secs)} 秒")
+            # 每秒检查，避免长时间阻塞
+            while wait_secs > 0:
+                time.sleep(min(1, wait_secs))
+                wait_secs -= 1
+
+    # 精确等待到整秒
+    while datetime.now().second % 1 != 0:
+        time.sleep(0.05)
+
+    log(f"[秒杀] {m} 开始抢购！")
+
+    # 1. 查询秒杀活动列表
+    sale_list = api_req(
+        'https://wappark.189.cn/jt-sign/seckill/list',
+        json={"para": encrypt_rsa({"phone": phone})},
+        headers=sign_header
+    )
+    if not isinstance(sale_list, dict):
+        log(f"[秒杀] {m} 查询秒杀列表失败")
+        return None
+
+    sale_items = sale_list.get('data', {}).get('biz', {}).get('seckillGoods', [])
+    if not sale_items:
+        log(f"[秒杀] {m} 当前无秒杀活动")
+        return None
+
+    log(f"[秒杀] {m} 发现 {len(sale_items)} 个秒杀商品")
+
+    grabbed = []
+    for item in sale_items:
+        goods_id = item.get('goodsId', '')
+        goods_name = item.get('goodsName', '未知')
+        sale_price = item.get('salePrice', 0)
+        stock = item.get('stock', 0)
+
+        log(f"[秒杀] {m} 商品: {goods_name} (价格:{sale_price} 库存:{stock})")
+
+        if stock <= 0:
+            continue
+
+        # 疯狂点击抢购（3次重试）
+        for attempt in range(3):
+            buy_res = api_req(
+                'https://wappark.189.cn/jt-sign/seckill/buy',
+                json={"para": encrypt_rsa({"phone": phone, "goodsId": goods_id})},
+                headers=sign_header
+            )
+            if isinstance(buy_res, dict):
+                buy_code = buy_res.get('resoultCode', -1)
+                buy_msg = buy_res.get('resoultMsg', '')
+                if buy_code == 0:
+                    log(f"[秒杀成功] {m} 抢到: {goods_name}")
+                    grabbed.append(goods_name)
+                    break
+                elif '已抢' in buy_msg or '已购' in buy_msg or '库存不足' in buy_msg:
+                    log(f"[秒杀] {m} {buy_msg}")
+                    break
+                else:
+                    log(f"[秒杀] {m} 第{attempt+1}次抢购: {buy_msg}")
+            time.sleep(0.5)
+
+        time.sleep(0.3)
+
+    if grabbed:
+        msg = f"抢到 {len(grabbed)} 个: {'、'.join(grabbed)}"
+        log(f"[秒杀] {m} {msg}")
+        return {"type": "秒杀", "value": msg}
+    else:
+        log(f"[秒杀] {m} 未抢到任何商品")
+        return None
+
+
 # ==================== 任务执行 ====================
 
 def sign_tasks(user: dict):
@@ -463,6 +576,60 @@ def sign_tasks(user: dict):
         time.sleep(1)
     if feed_count > 0:
         result["items"].append({"type": "宠物", "value": f"喂食 {feed_count} 次"})
+
+    # 宠物乐园等级权益兑换话费券
+    if ENABLE_EXCHANGE:
+        log(f"[权益兑换] {m} 查询宠物等级权益")
+        rights_res = api_req(
+            'https://wappark.189.cn/jt-sign/paradise/getLevelRightsList',
+            json={"para": encrypt_rsa({"phone": user['phoneNbr']})},
+            headers=sign_header
+        )
+        if isinstance(rights_res, dict):
+            current_level = rights_res.get('currentLevel', 6)
+            level_key = f"V{current_level}"
+            items = rights_res.get(level_key, [])
+
+            # 查询金豆余额
+            coin_res = api_req(
+                'https://wappark.189.cn/jt-sign/api/home/userCoinInfo',
+                json={"para": encrypt_rsa({"phone": user['phoneNbr']})},
+                headers=sign_header
+            )
+            coin = coin_res.get('totalCoin', 0) if isinstance(coin_res, dict) else 0
+
+            exchanged = 0
+            for item in items:
+                rights_name = item.get('rightsName', '')
+                cost_coin = item.get('costCoin', 0)
+                # 只兑换话费券和专享金豆
+                import re
+                is_phone_coupon = re.search(r'\d+元话费', rights_name)
+                is_special_coin = re.search(r'专享\d+金豆', rights_name)
+                if (is_phone_coupon or is_special_coin) and coin >= cost_coin:
+                    log(f"[权益兑换] {m} 兑换: {rights_name} (需{cost_coin}金豆，余额{coin})")
+                    exc_res = api_req(
+                        'https://wappark.189.cn/jt-sign/paradise/conversionRights',
+                        json={"para": encrypt_rsa({"phone": user['phoneNbr'], "rightsId": item.get('id', '')})},
+                        headers=sign_header
+                    )
+                    exc_msg = exc_res.get('resoultMsg', '') if isinstance(exc_res, dict) else ''
+                    log(f"[权益兑换] {m} 结果: {exc_msg or '成功'}")
+                    result["items"].append({"type": "兑换", "value": rights_name})
+                    exchanged += 1
+                    coin -= cost_coin
+                    time.sleep(1)
+            if exchanged == 0:
+                log(f"[权益兑换] {m} 无可兑换的话费券权益或金豆不足")
+        else:
+            log(f"[权益兑换] {m} 查询等级权益失败")
+
+    # 话费券秒杀
+    if ENABLE_FLASH_SALE:
+        log(f"[秒杀] {m} 开始话费券秒杀")
+        flash_result = do_flash_sale(user, sign_header)
+        if flash_result:
+            result["items"].append(flash_result)
 
     log(f"[任务全部完成] {m}")
     _save_result(result)

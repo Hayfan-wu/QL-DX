@@ -13,8 +13,8 @@ QL-Bot 业务项目插件，提供完整的 QQ 交互逻辑。
   电信签到                    - 手动触发签到翻牌任务
   电信执行                    - 执行全部自动化任务
   电信配置                    - 查看当前所有配置
-  电信开启 签到/活动/抽奖      - 开启功能
-  电信关闭 签到/活动/抽奖      - 关闭功能
+  电信开启 签到/活动/抽奖/兑换/秒杀 - 开启功能
+  电信关闭 签到/活动/抽奖/兑换/秒杀 - 关闭功能
   签到 / 话费 / 金豆          - 快捷命令
 """
 
@@ -49,6 +49,8 @@ DX_ENV_VARS = [
     ("DX_ENABLE_SIGNIN",           "启用签到 (true/false)"),
     ("DX_ENABLE_ACTIVITY",         "启用活动扫描 (true/false)"),
     ("DX_ENABLE_LOTTERY",          "启用抽奖 (true/false)"),
+    ("DX_ENABLE_EXCHANGE",         "启用宠物等级权益兑换话费券 (true/false)"),
+    ("DX_ENABLE_FLASH_SALE",       "启用话费券秒杀 (true/false)"),
     ("DX_FLASH_SALE_TIME",         "秒杀时间 (HH:MM:SS)"),
     ("DX_HEADLESS",                "无头模式 (true/false)"),
     ("DX_TIMEOUT",                 "超时秒数"),
@@ -77,7 +79,7 @@ MENU_TEXT = """📱 中国电信话费自动化
 ✅ 电信开启 XX - 开启指定功能
 ❌ 电信关闭 XX - 关闭指定功能
 ━━━━━━━━━━━━━━━━━━━━
-可开关: 签到 | 活动 | 抽奖
+可开关: 签到 | 活动 | 抽奖 | 兑换 | 秒杀
 快捷: 签到 / 话费 / 金豆
 
 项目: github.com/Hayfan-wu/QL-DX"""
@@ -356,6 +358,8 @@ class DXPlugin(Plugin):
             f"签到: {_on_off('DX_ENABLE_SIGNIN')}\n"
             f"活动: {_on_off('DX_ENABLE_ACTIVITY')}\n"
             f"抽奖: {_on_off('DX_ENABLE_LOTTERY')}\n"
+            f"兑换: {_on_off('DX_ENABLE_EXCHANGE')}\n"
+            f"秒杀: {_on_off('DX_ENABLE_FLASH_SALE')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⏰ 秒杀时间: {env.get('DX_FLASH_SALE_TIME', '10:00:00')}"
         )
@@ -392,13 +396,17 @@ class DXPlugin(Plugin):
             "签到": "DX_ENABLE_SIGNIN",
             "活动": "DX_ENABLE_ACTIVITY",
             "抽奖": "DX_ENABLE_LOTTERY",
+            "兑换": "DX_ENABLE_EXCHANGE",
+            "秒杀": "DX_ENABLE_FLASH_SALE",
             "signin":   "DX_ENABLE_SIGNIN",
             "activity": "DX_ENABLE_ACTIVITY",
             "lottery":  "DX_ENABLE_LOTTERY",
+            "exchange": "DX_ENABLE_EXCHANGE",
+            "flash":    "DX_ENABLE_FLASH_SALE",
         }
         key = toggle_map.get(arg.strip())
         if not key:
-            return f"❌ 未知功能: {arg}\n可用: 签到 | 活动 | 抽奖"
+            return f"❌ 未知功能: {arg}\n可用: 签到 | 活动 | 抽奖 | 兑换 | 秒杀"
 
         env = self._read_env()
         env[key] = "true" if enable else "false"
