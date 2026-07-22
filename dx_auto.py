@@ -439,6 +439,10 @@ def sign_tasks(user: dict):
         "login": True,
         "signin": {},
         "activities": [],
+        "signDay": 0,        # 连续签到天数
+        "totalCoin": 0,      # 金豆总数
+        "todayCoin": 0,      # 今日获得豆子
+        "nonCoinRewards": [], # 非豆子奖励
     }
 
     sso_url = f"https://wappark.189.cn/jt-sign/ssoHomLogin?ticket={user['uid']}"
@@ -449,6 +453,27 @@ def sign_tasks(user: dict):
         _save_result(result)
         return result
     sign_header = {'sign': sso['sign']}
+
+    # 先查询签到状态（获取连续签到天数和金豆余额）
+    status_res = api_req(
+        'https://wappark.189.cn/jt-sign/api/home/userStatusInfo',
+        json={"para": encrypt_rsa({"phone": user['phoneNbr']})},
+        headers=sign_header
+    )
+    if isinstance(status_res, dict):
+        status_data = status_res.get('data', {})
+        result["signDay"] = status_data.get('signDay', 0)
+        log(f"[状态] {m} 连续签到 {result['signDay']} 天")
+
+    # 查询金豆余额
+    coin_res = api_req(
+        'https://wappark.189.cn/jt-sign/api/home/userCoinInfo',
+        json={"para": encrypt_rsa({"phone": user['phoneNbr']})},
+        headers=sign_header
+    )
+    if isinstance(coin_res, dict):
+        result["totalCoin"] = coin_res.get('totalCoin', 0)
+        log(f"[金豆] {m} 当前余额: {result['totalCoin']}")
 
     # 签到
     if ENABLE_SIGNIN:
@@ -462,6 +487,7 @@ def sign_tasks(user: dict):
             inner = sign_res.get('data', {})
             if inner.get('code') == 1:
                 coin = inner.get('coin', 0)
+                result["todayCoin"] += coin
                 msg = f"签到成功，获得{coin}金豆"
                 log(f"[签到成功] {m} {msg}")
                 result["items"].append({"type": "签到", "value": msg})
@@ -494,6 +520,9 @@ def sign_tasks(user: dict):
             if isinstance(award_res, dict):
                 prize = award_res.get('prizeDetail', {}).get('biz', {}).get('winTitle', '未知')
                 result["items"].append({"type": f"{label}兑换", "value": prize})
+                # 判断是否为非豆子奖励
+                if '金豆' not in prize:
+                    result["nonCoinRewards"].append(prize)
 
     check_and_award('api/home/userStatusInfo', 'signDay', ['7'], '连签')
     check_and_award('webSign/continueSignDays', 'continueSignDays', ['15', '28'], '累签')
@@ -590,13 +619,8 @@ def sign_tasks(user: dict):
             level_key = f"V{current_level}"
             items = rights_res.get(level_key, [])
 
-            # 查询金豆余额
-            coin_res = api_req(
-                'https://wappark.189.cn/jt-sign/api/home/userCoinInfo',
-                json={"para": encrypt_rsa({"phone": user['phoneNbr']})},
-                headers=sign_header
-            )
-            coin = coin_res.get('totalCoin', 0) if isinstance(coin_res, dict) else 0
+            # 使用已查询的金豆余额
+            coin = result["totalCoin"]
 
             exchanged = 0
             for item in items:
@@ -616,6 +640,8 @@ def sign_tasks(user: dict):
                     exc_msg = exc_res.get('resoultMsg', '') if isinstance(exc_res, dict) else ''
                     log(f"[权益兑换] {m} 结果: {exc_msg or '成功'}")
                     result["items"].append({"type": "兑换", "value": rights_name})
+                    if '金豆' not in rights_name:
+                        result["nonCoinRewards"].append(rights_name)
                     exchanged += 1
                     coin -= cost_coin
                     time.sleep(1)
@@ -659,38 +685,48 @@ def _save_result(run_result: dict):
     RESULT_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2))
 
 
+def format_wxpusher_summary(result: dict) -> str:
+    """格式化 Wxpusher 风格摘要（供 bot 插件和 notify 调用）
+
+    输出格式:
+      电信签到 成功/失败
+      连续签到 X 天
+      今日豆子 +X
+      豆子总数 X
+      其他奖励: X元话费券、XXX
+    """
+    phone = result.get("phone", "未知")
+    time_str = result.get("time", "")
+    signin = result.get("signin", {})
+    sign_day = result.get("signDay", 0)
+    total_coin = result.get("totalCoin", 0)
+    today_coin = result.get("todayCoin", 0)
+    non_coin = result.get("nonCoinRewards", [])
+
+    lines = [
+        f"📱 电信签到 {'✅成功' if signin.get('ok') else '❌失败'}",
+        f"📅 连续签到 {sign_day} 天",
+        f"🟡 今日豆子 +{today_coin}",
+        f"💰 豆子总数 {total_coin}",
+    ]
+
+    if non_coin:
+        lines.append(f"🎁 其他奖励: {'、'.join(non_coin)}")
+
+    if result.get("error"):
+        lines.append(f"⚠️ 异常: {result['error']}")
+
+    return "\n".join(lines)
+
+
 def query_results() -> str:
-    """查询所有历史任务产物 (供 bot 插件调用)"""
+    """查询最近一次执行结果（Wxpusher 风格简化输出）"""
     records = _load_results()
-    total = records.get("total", {})
     history = records.get("history", [])
     if not history:
-        return "暂无任务执行记录，请先执行 电信签到 或 电信执行"
+        return "暂无任务执行记录，请先执行 电信执行"
     last = history[-1]
-    lines = [
-        "电信任务产物查询",
-        "==================================",
-        f"最近执行: {last.get('time', '未知')}",
-        f"累计执行: {len(history)} 次",
-        "==================================",
-        "累计获得产物:",
-    ]
-    if total:
-        for key, items in total.items():
-            lines.append(f"  {key}: {len(items)} 次")
-            for item in items[-3:]:
-                lines.append(f"    - {item['time']}: {item['value']}")
-    else:
-        lines.append("  (暂无产物记录)")
-    lines.append("==================================")
-    lines.append("最近一次详情:")
-    for item in last.get("items", []):
-        lines.append(f"  {item.get('type', '?')}: {item.get('value', '?')}")
-    if last.get("signin"):
-        lines.append(f"  签到: {last['signin'].get('msg', '-')}")
-    if last.get("error"):
-        lines.append(f"  [错误] {last['error']}")
-    return "\n".join(lines)
+    return format_wxpusher_summary(last)
 
 
 # ==================== 主入口 ====================
@@ -778,12 +814,13 @@ def run_all(signin_only: bool = False) -> dict:
 
         time.sleep(2)
 
-    # 推送所有日志（如果存在 notify 模块）
+    # 推送简化摘要（如果存在 notify 模块）
     try:
         import notify
-        if _global_logs:
-            full_log = "\n".join(_global_logs)
-            notify.send('电信任务推送', full_log)
+        if all_results:
+            for r in all_results:
+                summary = format_wxpusher_summary(r)
+                notify.send('电信签到推送', summary)
             log("通知推送成功")
     except ImportError:
         pass
